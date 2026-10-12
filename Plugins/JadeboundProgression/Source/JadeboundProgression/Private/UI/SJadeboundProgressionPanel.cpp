@@ -2637,9 +2637,9 @@ FText SJadeboundProgressionPanel::BuyRestriction(const FJadeboundItemView& Item)
     if (!bMerchantInRange) return LOCTEXT("OutOfRange", "Move closer to the merchant to trade.");
     if (!Item.bPurchasable || Item.BuyPrice < 0) return LOCTEXT("NotForSale", "This item is not for sale.");
     const AJadeboundProgressionActor* Actor = ProgressionActor.Get();
-    if (Item.ItemId == 7 && (!Actor || Actor->IsDevelopmentModel() ||
-        Actor->GetNetMode() != NM_Standalone || !Actor->HasAuthority()))
-        return LOCTEXT("BuyBalmStandaloneOnly", "Balm purchase requires the local standalone hero.");
+    if (Item.ItemId == 7 && (!Actor || (Actor->IsDevelopmentModel() ? !Actor->IsNativeConsumableContextAvailable() :
+        (Actor->GetNetMode() != NM_Standalone || !Actor->HasAuthority()))))
+        return LOCTEXT("BuyBalmReadyHero", "Balm purchase requires your living, ready hero.");
     if (DisplayState.Coins < Item.BuyPrice) return LOCTEXT("InsufficientCoins", "Not enough jade coins.");
     if (!HasCapacityForOne(Item.ItemId)) return LOCTEXT("BagFull", "No inventory space for this item.");
     return FText::GetEmpty();
@@ -2692,8 +2692,9 @@ FText SJadeboundProgressionPanel::UnequipRestriction() const
 FText SJadeboundProgressionPanel::UseRestrictionForSlot(int32 SlotIndex) const
 {
     const AJadeboundProgressionActor* Actor = ProgressionActor.Get();
-    if (!Actor || Actor->IsDevelopmentModel() || Actor->GetNetMode() != NM_Standalone || !Actor->HasAuthority())
-        return LOCTEXT("UseStandaloneOnly", "Balm use requires the local standalone hero.");
+    if (!Actor || (Actor->IsDevelopmentModel() ? !Actor->IsNativeConsumableContextAvailable() :
+        (Actor->GetNetMode() != NM_Standalone || !Actor->HasAuthority())))
+        return LOCTEXT("UseReadyHero", "Balm use requires your living, ready hero.");
     if (!bReady || !Actor->IsProgressionReady()) return LOCTEXT("UseNotReady", "Your pack is not ready. Read the note below.");
     const FJadeboundInventorySlot* Slot = DisplayState.Slots.IsValidIndex(SlotIndex) ? &DisplayState.Slots[SlotIndex] : nullptr;
     const FJadeboundItemView* Item = Slot ? FindDefinition(Slot->ItemId) : nullptr;
@@ -2729,15 +2730,17 @@ FText SJadeboundProgressionPanel::SplitRestrictionForSlot(int32 SlotIndex) const
     return FText::GetEmpty();
 }
 
-FReply SJadeboundProgressionPanel::ExecuteAction(EAction Action, int32 Argument, int64 ExpectedRevision, TSharedPtr<const uint8> RenderToken)
+FReply SJadeboundProgressionPanel::ExecuteAction(EAction Action, int32 Argument, int64 ExpectedRevision,
+    TSharedPtr<const uint8> RenderToken, uint64 ExpectedLifeGeneration)
 {
-    return ExecuteActionWithQuantity(Action, Argument, ExpectedRevision, 1, 0, RenderToken);
+    return ExecuteActionWithQuantity(Action, Argument, ExpectedRevision, 1, 0, RenderToken, ExpectedLifeGeneration);
 }
 
 TSharedRef<SWidget> SJadeboundProgressionPanel::ActionButton(const FText& Label,
     const FText& Tooltip, bool bEnabled, EAction Action, int32 Argument, int32 Quantity, int32 ExpectedItemId)
 {
     const int64 ExpectedRevision = DisplayState.Revision;
+    const uint64 ExpectedLifeGeneration = ProgressionActor.IsValid() ? ProgressionActor->GetItemUseLifeGeneration() : 0;
     const bool bCanClick = bEnabled && ProgressionActor.IsValid()
         && (Action == EAction::Close || !bAwaitingAction);
     const bool bPrimary = Action == EAction::Buy || Action == EAction::Equip || Action == EAction::Save || Action == EAction::Use;
@@ -2751,7 +2754,7 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::ActionButton(const FText& Label,
         .ButtonStyle(Style)
         .IsEnabled(bCanClick).ContentPadding(FMargin(12.f,Action == EAction::Split ? 3.f : 8.f)).HAlign(HAlign_Center)
         .ToolTip(PackTooltip(Tooltip,Label,TooltipItem))
-        .OnClicked(this, &SJadeboundProgressionPanel::ExecuteActionWithQuantity, Action, Argument, ExpectedRevision, Quantity, ExpectedItemId, TradeRenderToken)
+        .OnClicked(this, &SJadeboundProgressionPanel::ExecuteActionWithQuantity, Action, Argument, ExpectedRevision, Quantity, ExpectedItemId, TradeRenderToken, ExpectedLifeGeneration)
         [Text(Label,14.f,bCanClick ? Ink : FLinearColor(.65f,.69f,.61f,1.f),true)];
     FocusTargets.Add(FName(*FString::Printf(TEXT("Action-%d-%d-%d"),static_cast<int32>(Action),Argument,Quantity)),Button);
     return WithFocusRing(Button);
@@ -2764,7 +2767,7 @@ FReply SJadeboundProgressionPanel::SelectSlot(int32 Index)
 }
 
 FReply SJadeboundProgressionPanel::HandleInventoryMouseDown(const FGeometry&, const FPointerEvent& Event,
-    int32 SlotIndex, int32 RenderedItemId, int64 RenderedRevision, TSharedPtr<const uint8> RenderToken)
+    int32 SlotIndex, int32 RenderedItemId, int64 RenderedRevision, TSharedPtr<const uint8> RenderToken, uint64 RenderedLifeGeneration)
 {
     if (Event.GetEffectingButton() != EKeys::RightMouseButton) return FReply::Unhandled();
     // Consume the gesture even when it cannot transact; it never reaches the world.
@@ -2784,7 +2787,7 @@ FReply SJadeboundProgressionPanel::HandleInventoryMouseDown(const FGeometry&, co
     {
         if (!UseRestrictionForSlot(SlotIndex).IsEmpty()) return SelectSlot(SlotIndex);
         SelectedSlot = SlotIndex;
-        return ExecuteAction(EAction::Use, SlotIndex, RenderedRevision, RenderToken);
+        return ExecuteAction(EAction::Use, SlotIndex, RenderedRevision, RenderToken, RenderedLifeGeneration);
     }
     // Materials, parcel, empty or unavailable items remain inspection only.
     if (!Item || !Item->bWeapon || !EquipRestrictionForSlot(SlotIndex).IsEmpty())
@@ -2933,7 +2936,9 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildInventory()
         const FText MouseHint = !bOccupied ? FText::GetEmpty() : Item && Item->bWeapon
             ? LOCTEXT("PackWeaponMouseHelp","Left-click to inspect. Right-click to equip.")
             : Item && Item->HealingPercent > 0
-                ? LOCTEXT("PackBalmMouseHelpCompact","Click to inspect. Drag onto an F-key below to assign.")
+                ? (ProgressionActor.IsValid() && ProgressionActor->IsDevelopmentModel()
+                    ? LOCTEXT("NativePackBalmMouseHelp","Left-click to inspect. Right-click to use one.")
+                    : LOCTEXT("PackBalmMouseHelpCompact","Click to inspect. Drag onto an F-key below to assign."))
                 : LOCTEXT("PackItemMouseHelp","Click to inspect. This item has no use action.");
         const TSharedRef<SWidget> Content = SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight()
@@ -2950,7 +2955,8 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildInventory()
         const FText SlotDetails=bOccupied ? FText::Format(LOCTEXT("PackSlotCompleteDetails","{0}\n{1}\nPack slot {2}"),Details,MouseHint,FText::AsNumber(Index+1)) : Details;
         const auto Tooltip=PackTooltip(SlotDetails,SlotHeading,bOccupied ? Slot->ItemId : 0);
         TSharedPtr<SWidget> Button;
-        if(bOccupied && Item && Item->ItemId==7 && Item->HealingPercent==25)
+        if(bOccupied && Item && Item->ItemId==7 && Item->HealingPercent==25 &&
+            ProgressionActor.IsValid() && !ProgressionActor->IsDevelopmentModel())
         {
             Button=SNew(SJadeboundBalmDragTile).ProgressionActor(ProgressionActor).PanelToken(SharedThis(this))
                 .InventorySlot(Index).InventoryRevision(DisplayState.Revision)
@@ -2966,7 +2972,8 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildInventory()
         FocusTargets.Add(FName(*FString::Printf(TEXT("Slot-%d"),Index)),Button);
         Grid->AddSlot(Index % 3,Index / 3)[SNew(SBox).WidthOverride(60.f).HeightOverride(58.f)
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder")).Padding(0.f)
-                .OnMouseButtonDown(this,&SJadeboundProgressionPanel::HandleInventoryMouseDown,Index,Slot ? Slot->ItemId : 0,DisplayState.Revision,TradeRenderToken)
+                .OnMouseButtonDown(this,&SJadeboundProgressionPanel::HandleInventoryMouseDown,Index,Slot ? Slot->ItemId : 0,DisplayState.Revision,TradeRenderToken,
+                    ProgressionActor.IsValid() ? ProgressionActor->GetItemUseLifeGeneration() : uint64(0))
                 .OnMouseDoubleClick(this,&SJadeboundProgressionPanel::HandleInventoryDoubleClick)
                 [WithFocusRing(Button.ToSharedRef())]]];
     }

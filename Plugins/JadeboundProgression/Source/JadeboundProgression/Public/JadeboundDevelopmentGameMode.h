@@ -55,6 +55,7 @@ private:
     friend struct FJadeboundAttackWindowTestAccess;
     friend struct FJadeboundRecipientNativeTestAccess;
     friend struct FJadeboundPlayerLifeTestAccess;
+    friend struct FJadeboundNativeBalmTestAccess;
 #endif
     UPROPERTY(Transient) TObjectPtr<AJadeboundNativeRaider> RecipientRaider;
     AJadeboundNativeRaider* GetRecipientRaider() const;

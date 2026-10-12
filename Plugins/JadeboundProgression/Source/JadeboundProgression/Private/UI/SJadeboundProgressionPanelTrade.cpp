@@ -2,7 +2,7 @@
 #include "HAL/PlatformTime.h"
 
 FReply SJadeboundProgressionPanel::ExecuteActionWithQuantity(EAction Action, int32 Argument, int64 ExpectedRevision,
-    int32 Quantity, int32 ExpectedItemId, TSharedPtr<const uint8> RenderToken)
+    int32 Quantity, int32 ExpectedItemId, TSharedPtr<const uint8> RenderToken, uint64 ExpectedLifeGeneration)
 {
     AJadeboundProgressionActor* Actor = ProgressionActor.Get();
     if (!IsValid(Actor) || Actor->IsActorBeingDestroyed()) return FReply::Handled();
@@ -24,6 +24,10 @@ FReply SJadeboundProgressionPanel::ExecuteActionWithQuantity(EAction Action, int
             (bSelectedAction && SelectedSlot != Argument))
         { RefreshFromActor(true); return FReply::Handled(); }
     }
+    if (Action == EAction::Use && Actor->IsDevelopmentModel() &&
+        (ExpectedLifeGeneration == 0 || ExpectedLifeGeneration != Actor->GetItemUseLifeGeneration() ||
+            !Actor->IsNativeConsumableContextAvailable()))
+    { RefreshFromActor(true); return FReply::Handled(); }
     if (Action == EAction::Sell && Quantity != 1)
     {
         const FJadeboundProgressionState Live = Actor->GetProgressionState();
@@ -51,8 +55,8 @@ FReply SJadeboundProgressionPanel::ExecuteActionWithQuantity(EAction Action, int
     case EAction::Sell: PendingAction = TEXT("Sell"); Actor->SellItem(Argument, Quantity, ExpectedRevision); break;
     case EAction::Equip: PendingAction = TEXT("Equip"); Actor->EquipItem(Argument, ExpectedRevision); break;
     case EAction::Unequip: PendingAction = TEXT("Unequip"); Actor->UnequipWeaponAtRevision(ExpectedRevision); break;
-    case EAction::Use: PendingAction = TEXT("Use"); Actor->UseItem(Argument,
-        DisplayState.Slots.IsValidIndex(Argument) ? DisplayState.Slots[Argument].ItemId : 0, ExpectedRevision); break;
+    case EAction::Use: PendingAction = TEXT("Use"); Actor->UseItemAtLifeGeneration(Argument,
+        DisplayState.Slots.IsValidIndex(Argument) ? DisplayState.Slots[Argument].ItemId : 0, ExpectedRevision, ExpectedLifeGeneration); break;
     case EAction::Split: PendingAction = TEXT("Split"); Actor->SplitItem(Argument, 1,
         DisplayState.Slots.IsValidIndex(Argument) ? DisplayState.Slots[Argument].ItemId : 0, ExpectedRevision); break;
     case EAction::Save: PendingAction = TEXT("Save"); Actor->SaveProgress(); break;

@@ -35,8 +35,9 @@ bool AJadeboundProgressionActor::BuyItemAtRevision(int32 Id, int32 Quantity, int
     ON_SCOPE_EXIT { if (HasAuthority() && Player && Player->IsLocalController() && !bExecutingDevelopmentRequest) AcknowledgeAction(TEXT("Buy"), Ok); };
     if (!HasAuthority()) { ServerBuy(Id, Quantity, ExpectedRevision); return false; }
     if (Id == static_cast<int32>(Jadebound::ItemId::Balm) &&
-        (bDevelopmentModel || GetNetMode() != NM_Standalone || !ResolveClickWalkScope()))
-    { Feedback = FText::FromString(TEXT("Balm purchase requires the local standalone V006 hero.")); return false; }
+        (bDevelopmentModel ? !IsNativeConsumableContextAvailable() :
+            (GetNetMode() != NM_Standalone || !ResolveClickWalkScope())))
+    { Feedback = FText::FromString(TEXT("Balm purchase requires your living, ready hero.")); return false; }
     if (!AuthorityReady() || !MatchesInventoryIntentRevision(ExpectedRevision)) return false;
     if (!IsMerchantInRange()) { Feedback = FText::FromString(TEXT("Move closer to the merchant to buy or sell.")); return false; }
     if (Id == 2 && !AshwoodSpearMesh) { Feedback = FText::FromString(TEXT("The spear asset is unavailable. No coins were spent.")); return false; }

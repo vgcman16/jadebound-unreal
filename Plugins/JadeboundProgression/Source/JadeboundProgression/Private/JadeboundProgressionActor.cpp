@@ -2698,6 +2698,10 @@ bool AJadeboundProgressionActor::IsMerchantInRange() const
 }
 bool AJadeboundProgressionActor::AuthorityReady()
 {
+    // A writer may call back after freezing its exact candidate. Never admit a
+    // second progression mutation before that image is verified or retried.
+    // Retained life damage/revive deliberately use a separate admission gate.
+    if (bUnsavedCandidate || HeldSaveCandidate) return false;
     if (bDevelopmentModel && (!HasDevelopmentContext() || GetOwner() != Player)) return false;
     if (!HasAuthority() || !HasJournalWriterLease() || !IsProgressionReady() || !Hero || !Player || Player->GetPawn() != Hero) return false;
     if (!HasLivingPossessedHero())
@@ -2800,7 +2804,7 @@ bool AJadeboundProgressionActor::EquipItem(int32 Slot, int64 ExpectedRevision)
 }
 bool AJadeboundProgressionActor::UseItem(int32 Slot, int32 ExpectedItemId, int64 ExpectedRevision)
 {
-    return UseOwnedItem(Slot,ExpectedItemId,ExpectedRevision,EItemUseContext::Pack);
+    return UseItemAtLifeGeneration(Slot, ExpectedItemId, ExpectedRevision, GetItemUseLifeGeneration());
 }
 bool AJadeboundProgressionActor::UseOwnedItem(int32 Slot, int32 ExpectedItemId, int64 ExpectedRevision, EItemUseContext Context)
 {

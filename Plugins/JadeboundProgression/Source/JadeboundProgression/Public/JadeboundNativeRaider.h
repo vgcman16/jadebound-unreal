@@ -53,6 +53,7 @@ private:
     friend struct FJadeboundAttackWindowTestAccess;
     friend struct FJadeboundRecipientNativeTestAccess;
     friend struct FJadeboundPlayerLifeTestAccess;
+    friend struct FJadeboundNativeBalmTestAccess;
 #endif
     UPROPERTY(VisibleAnywhere, Category="Jadebound|Presentation") TObjectPtr<UTextRenderComponent> HealthLabel;
     UPROPERTY(ReplicatedUsing=OnRepLife) FJadeboundRaiderLife Life;

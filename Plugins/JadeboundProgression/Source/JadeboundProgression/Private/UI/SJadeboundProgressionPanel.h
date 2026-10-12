@@ -89,15 +89,17 @@ private:
     TSharedRef<SWidget> BuildSelection();
     TSharedRef<SWidget> BuildEquipment();
     TSharedRef<SWidget> BuildQuest();
-    FReply ExecuteAction(EAction Action, int32 Argument, int64 ExpectedRevision, TSharedPtr<const uint8> RenderToken);
+    FReply ExecuteAction(EAction Action, int32 Argument, int64 ExpectedRevision, TSharedPtr<const uint8> RenderToken,
+        uint64 ExpectedLifeGeneration = 0);
     FReply ExecuteActionWithQuantity(EAction Action, int32 Argument, int64 ExpectedRevision,
-        int32 Quantity, int32 ExpectedItemId, TSharedPtr<const uint8> RenderToken);
+        int32 Quantity, int32 ExpectedItemId, TSharedPtr<const uint8> RenderToken, uint64 ExpectedLifeGeneration = 0);
     TSharedRef<SWidget> ActionButton(const FText& Label, const FText& Tooltip,
         bool bEnabled, EAction Action, int32 Argument = INDEX_NONE,
         int32 Quantity = 1, int32 ExpectedItemId = 0);
     FReply SelectSlot(int32 SlotIndex);
     FReply HandleInventoryMouseDown(const FGeometry& Geometry, const FPointerEvent& Event,
-        int32 SlotIndex, int32 RenderedItemId, int64 RenderedRevision, TSharedPtr<const uint8> RenderToken);
+        int32 SlotIndex, int32 RenderedItemId, int64 RenderedRevision, TSharedPtr<const uint8> RenderToken,
+        uint64 RenderedLifeGeneration = 0);
     FReply HandleMerchantMouseDown(const FGeometry& Geometry, const FPointerEvent& Event,
         int32 RenderedItemId, int64 RenderedRevision, int64 RenderedBuyPrice, TSharedPtr<const uint8> RenderToken);
     FReply HandleMerchantDoubleClick(const FGeometry& Geometry, const FPointerEvent& Event);

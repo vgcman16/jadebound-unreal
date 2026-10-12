@@ -12,6 +12,7 @@ This repository contains the current Unreal C++ progression plugin and its tests
 - An opt-in loopback server foundation for two to four profiles, owner-specific progression models, validated requests and retained save writers.
 - Same-server-session resume tickets that retain a character across disconnects. Native transport/gameplay reconnect qualification remains pending.
 - Server-owned 100–0 health, telegraphed courtyard strikes, replicated life presentation hooks, and a ten-second manual revive in the opt-in development combat slice. Rendered client gameplay remains pending.
+- Native healing balm pairs server health with one owned-item consumption. Held-save retries preserve subsequent damage or revive state; health across server restart remains unfinished.
 
 Armor swapping, complete class skill sets, gathering/crafting, companions, mounts, dungeons, the main quest ending and production online infrastructure remain unfinished. The art direction is still under review.
 
@@ -29,4 +30,4 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-See [validation results](docs/VALIDATION.md), [native player life](Plugins/JadeboundProgression/Docs/NativePlayerLife.md), [local development resume](Plugins/JadeboundProgression/Docs/LocalDevelopmentResume.md), [roadmap](docs/ROADMAP.md), and [publication scope](docs/PUBLICATION.md). A public repository does not by itself grant an open-source license; no additional redistribution license has been selected.
+See [validation results](docs/VALIDATION.md), [native player life](Plugins/JadeboundProgression/Docs/NativePlayerLife.md), [healing consumables](Plugins/JadeboundProgression/Docs/NativeConsumables.md), [local development resume](Plugins/JadeboundProgression/Docs/LocalDevelopmentResume.md), [roadmap](docs/ROADMAP.md), and [publication scope](docs/PUBLICATION.md). A public repository does not by itself grant an open-source license; no additional redistribution license has been selected.

@@ -315,8 +315,12 @@ public:
     UFUNCTION(BlueprintCallable, Category="Jadebound|Progression") bool EquipItem(int32 SlotIndex, int64 ExpectedRevision = -1);
     UFUNCTION(BlueprintCallable, Category="Jadebound|Progression") bool UnequipWeapon();
     bool UnequipWeaponAtRevision(int64 ExpectedRevision);
-    // Exact intent token; deliberately no client RPC until replicated health is qualified.
+    // Blueprint wrappers capture current life; native UI captures life when rendered.
+    // Opt-in native owner RPC still needs rendered transport qualification.
     UFUNCTION(BlueprintCallable, Category="Jadebound|Progression") bool UseItem(int32 SlotIndex, int32 ExpectedItemId, int64 ExpectedRevision);
+    bool UseItemAtLifeGeneration(int32 SlotIndex, int32 ExpectedItemId, int64 ExpectedRevision, uint64 ExpectedLifeGeneration);
+    uint64 GetItemUseLifeGeneration() const;
+    bool IsNativeConsumableContextAvailable() const;
     UFUNCTION(BlueprintCallable, Category="Jadebound|Progression") bool Interact();
     UFUNCTION(BlueprintCallable, Category="Jadebound|Progression") bool SaveProgress();
     UFUNCTION(BlueprintCallable, Category="Jadebound|Progression") bool ReloadProgress();
@@ -338,6 +342,7 @@ private:
     friend struct FJadeboundRecipientNativeTestAccess;
     friend struct FJadeboundStandaloneWriterTestAccess;
     friend struct FJadeboundPlayerLifeTestAccess;
+    friend struct FJadeboundNativeBalmTestAccess;
     TFunction<IFileHandle*(const FString&)> AutomationJournalOpener;
     static bool EncodeJournalForAutomation(UJadeboundCharacterSave* Save, TArray<uint8>& Bytes);
 #endif
@@ -355,6 +360,8 @@ private:
     bool RequestNativeRevive(uint64 ExpectedGeneration);
     bool CanNativeRevive(uint64 ExpectedGeneration) const;
     UFUNCTION(Server, Reliable) void ServerRequestNativeRevive(uint64 ExpectedGeneration);
+    bool UseNativeOwnedItem(int32 Slot, int32 ExpectedItemId, int64 ExpectedRevision, uint64 ExpectedLifeGeneration);
+    UFUNCTION(Server, Reliable) void ServerUseNativeItem(int32 Slot, int32 ExpectedItemId, int64 ExpectedRevision, uint64 ExpectedLifeGeneration);
     UFUNCTION() void OnRepNativePlayerLife();
     UPROPERTY(Replicated) FString ServerCharacterId;
     UPROPERTY(ReplicatedUsing=OnRepReadiness) bool bServerModelInitialized = false;
