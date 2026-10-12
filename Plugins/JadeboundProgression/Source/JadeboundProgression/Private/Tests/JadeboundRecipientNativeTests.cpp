@@ -5,6 +5,7 @@
 #include "JadeboundNativeRaider.h"
 #include "JadeboundPersonalDrop.h"
 #include "Combat/RecipientAnimationRules.h"
+#include "Combat/PlayerLifeRules.h"
 #include "Development/DevelopmentIdentity.h"
 #include "Domain/ProgressionCore.h"
 #include "Persistence/ProgressionSaveV2.h"
@@ -29,6 +30,9 @@
 // readiness assembly below are trusted fixture setup, not login admission.
 struct FJadeboundRecipientNativeTestAccess
 {
+    static Jadebound::Combat::PlayerLife::State LifeImage(const AJadeboundProgressionActor& Model) { return *Model.NativeLifeState; }
+    static void SetLife(AJadeboundProgressionActor& Model, const Jadebound::Combat::PlayerLife::State& Value)
+    { *Model.NativeLifeState = Value; Model.PublishNativePlayerLife(); }
     static bool Initialize(AJadeboundProgressionActor& Model, APlayerController& Controller,
         ACharacter& Pawn, const FString& Id, UStaticMesh* Glaive, UStaticMesh* Ore,
         UStaticMesh* Parcel, UAnimMontage* Montage)
@@ -391,14 +395,14 @@ bool FJadeboundRecipientNativeHitTest::RunTest(const FString& Parameters)
         NoMutation(TEXT("Wrong owner refuses actual early attack admission"), [&]() { return Access::Request(A); });
     A.SetOwner(Scope.Controllers[0]);
     if (!WrongOwner || !TestTrue(TEXT("Restored actual living owner is admitted"), Access::Living(Mode, A))) return false;
-    auto* Health = FindFProperty<FNumericProperty>(Scope.Heroes[0]->GetClass(), TEXT("Current HP"));
-    if (!Health || !Health->IsFloatingPoint()) { AddError(TEXT("Preserved actual health property became unavailable.")); return false; }
-    void* HealthAddress = Health->ContainerPtrToValuePtr<void>(Scope.Heroes[0]);
-    const double SavedHP = Health->GetFloatingPointPropertyValue(HealthAddress);
-    Health->SetFloatingPointPropertyValue(HealthAddress, 0.0); // Existing real field, trusted fixture perturbation only.
+    const auto SavedLife = Access::LifeImage(A);
+    auto DeadLife = SavedLife;
+    for (uint64 Strike = 1; Strike <= 5; ++Strike)
+        if (!Jadebound::Combat::PlayerLife::TryDamage(DeadLife, SavedLife.LastStrike + Strike, SavedLife.Generation, Scope.World->GetTimeSeconds())) return false;
+    Access::SetLife(A, DeadLife); // Valid canonical native life; never trust Blueprint HP.
     const bool DeadRefused = NoMutation(TEXT("Zero-health model refuses actual native hit"), [&]() { return Access::Hit(Enemy, A, *Scope.Heroes[0], 1, 1); }) &&
         NoMutation(TEXT("Zero-health model refuses actual early attack admission"), [&]() { return Access::Request(A); });
-    Health->SetFloatingPointPropertyValue(HealthAddress, SavedHP);
+    Access::SetLife(A, SavedLife);
     if (!DeadRefused || !TestTrue(TEXT("Restored actual health is positively admitted"), Access::Living(Mode, A))) return false;
     if (!NoMutation(TEXT("Stale enemy life cannot mutate any state"), [&]() { return Access::Hit(Enemy, A, *Scope.Heroes[0], 1, 2); })) return false;
     if (!Scope.Capture(0, BeforeA) || !Scope.Capture(1, BeforeB)) return false;

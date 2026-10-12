@@ -2,6 +2,7 @@
 #include "Domain/ProgressionCore.h"
 #include "Domain/RecipientLedger.h"
 #include "JadeboundDevelopmentGameMode.h"
+#include "GameFramework/GameStateBase.h"
 #include "JadeboundNativeRaider.h"
 #include "JadeboundMeleePresentationComponent.h"
 #include "JadeboundPersonalDrop.h"
@@ -634,6 +635,7 @@ void AJadeboundProgressionActor::GetLifetimeReplicatedProps(TArray<FLifetimeProp
     DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, bUnsavedCandidate, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, bDevelopmentModel, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, bRecipientCombatEnabled, COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, NativePlayerLife, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, ServerCharacterId, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, bServerModelInitialized, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(AJadeboundProgressionActor, AshwoodSpearMesh, COND_OwnerOnly);
@@ -658,6 +660,7 @@ void AJadeboundProgressionActor::Tick(float Seconds)
     if (!BeforePersistence.IsValid() || BeforePersistence->IsActorBeingDestroyed() || bPersistenceEndingPlay) return;
     BindGameplay();
     TickRevive();
+    BindNativePlayerLife();
     // New journals have no pending loot and may not yet have built visuals;
     // a late initial possession still gets one marker, without a save write.
     const TWeakObjectPtr<AJadeboundProgressionActor> BeforeVisualRefresh(this);
@@ -863,6 +866,23 @@ void AJadeboundProgressionActor::OnReviveDamage(AActor* DamagedActor, float, con
 FJadeboundRevivePresentation AJadeboundProgressionActor::GetRevivePresentation() const
 {
     FJadeboundRevivePresentation View;
+    if (bDevelopmentModel && NativePlayerLife.bInitialized)
+    {
+        View.bWaiting = NativePlayerLife.Health == 0;
+        View.Generation = NativePlayerLife.Generation;
+        View.bCanRevive = CanNativeRevive(View.Generation);
+        if (View.bWaiting && GetWorld())
+        {
+            const AGameStateBase* GameState = GetWorld()->GetGameState();
+            const double Now = HasAuthority() ? GetWorld()->GetTimeSeconds() :
+                (GameState ? GameState->GetServerWorldTimeSeconds() : -1);
+            if (FMath::IsFinite(Now) && Now >= 0 && FMath::IsFinite(NativePlayerLife.ReviveServerTime))
+                View.SecondsRemaining = static_cast<int32>(FMath::CeilToDouble(FMath::Clamp(NativePlayerLife.ReviveServerTime - Now, 0., 10.)));
+            else View.SecondsRemaining = 10;
+            View.Message = FText::FromString(View.bCanRevive ? TEXT("Choose Revive to return to the courtyard.") : TEXT("Your spirit is gathering. Wait for the countdown to finish."));
+        }
+        return View;
+    }
     View.bWaiting = bReviveWaiting;
     View.Generation = ReviveGeneration;
     View.Message = ReviveMessage;
@@ -879,6 +899,7 @@ FJadeboundRevivePresentation AJadeboundProgressionActor::GetRevivePresentation()
 
 bool AJadeboundProgressionActor::RequestRevive(uint64 ExpectedGeneration)
 {
+    if (bDevelopmentModel) return RequestNativeRevive(ExpectedGeneration);
     const auto View = GetRevivePresentation();
     if (!View.bWaiting || !View.bCanRevive || ExpectedGeneration != View.Generation) return false;
     APawn* Corpse = ReviveCorpse.Get();
@@ -2496,6 +2517,8 @@ bool AJadeboundProgressionActor::HasLivingPossessedHero() const
 {
     if (bReviveWaiting) return false;
     if (!IsValid(Hero) || !IsValid(Player) || Player->GetPawn() != Hero) return false;
+    if (bDevelopmentModel && (bRecipientCombatEnabled || NativePlayerLife.bInitialized))
+        return NativePlayerLife.IsAlive() && Hero->GetController() == Player;
     const auto* Health = Field<FNumericProperty>(Hero, TEXT("Current HP"));
     if (!Health || !Health->IsFloatingPoint()) return false;
     const double Value = Health->GetFloatingPointPropertyValue(Health->ContainerPtrToValuePtr<void>(Hero));
@@ -2504,6 +2527,28 @@ bool AJadeboundProgressionActor::HasLivingPossessedHero() const
 FJadeboundHealthPresentation AJadeboundProgressionActor::GetHealthPresentation() const
 {
     FJadeboundHealthPresentation View;
+    if (bDevelopmentModel)
+    {
+        if (!IsValid(Player) || !Player->IsLocalController() || !IsValid(Hero) ||
+            Player->GetPawn() != Hero || !NativePlayerLife.bInitialized) return View;
+        View.bContextAvailable = true;
+        View.Player = Player;
+        View.Pawn = Hero;
+        View.PlayerHealth = {true, static_cast<double>(NativePlayerLife.Health), 100., NativePlayerLife.Health / 100.f, NativePlayerLife.Health};
+        for (TActorIterator<AJadeboundNativeRaider> It(GetWorld()); It; ++It)
+        {
+            if (It->IsActorBeingDestroyed()) continue;
+            const auto Life = It->GetLife();
+            View.Target = *It;
+            View.TargetHealth = {true, static_cast<double>(Life.Health), 3., Life.Health / 3.f, FMath::RoundToInt(Life.Health * 100.f / 3.f)};
+            View.bTargetHidden = !Life.bAlive;
+            View.bTargetCombatEnabled = Life.bAlive;
+            View.TargetAnchor = It->GetActorLocation() + FVector(0,0,140);
+            View.bTargetAnchorAvailable = !View.TargetAnchor.ContainsNaN();
+            break;
+        }
+        return View;
+    }
     // Legacy V006 health is not replicated. Never present it as another
     // player's authoritative health, or as the development multiplayer model.
     if (bDevelopmentModel || GetNetMode() != NM_Standalone || !IsValid(Player) || !Player->IsLocalController()) return View;
@@ -3904,6 +3949,7 @@ void AJadeboundProgressionActor::ConfigureRecipientCombat(bool bEnabled, UAnimMo
         !GetWorld() || GetWorld()->bIsTearingDown) return;
     bRecipientCombatEnabled = bEnabled && Jadebound::Combat::IsSafeMeleeMontage(Montage);
     NativeAttackMontage = bRecipientCombatEnabled ? Montage : nullptr;
+    if (bRecipientCombatEnabled) InitializeNativePlayerLife();
     if (!bRecipientCombatEnabled) CancelRecipientAttack();
     if (HasActorBegunPlay()) RefreshDropVisuals();
     ForceNetUpdate();

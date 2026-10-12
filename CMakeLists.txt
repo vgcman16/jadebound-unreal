@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(JadeboundPortableTests LANGUAGES CXX)
 enable_testing()
-foreach(test_name IN ITEMS DevelopmentResumeRegistryTests DevelopmentResumeOptionsTests)
+foreach(test_name IN ITEMS DevelopmentResumeRegistryTests DevelopmentResumeOptionsTests PlayerLifeRulesTests)
     add_executable(${test_name} Plugins/JadeboundProgression/Tests/Portable/${test_name}.cpp)
     target_compile_features(${test_name} PRIVATE cxx_std_17)
     if(MSVC)

@@ -15,6 +15,8 @@ The long-term goal is a large original MMORPG. The first release aims to establi
 
 Immediate work is the merchant progression loop: inventory, visible weapons, transactions, loot, tracked one-time rewards and automatic persistence. Qualify full inventories, invalid requests, repeated rewards, death, a ten-second ghost/revive flow, ordinary restarts and reconnects through actual gameplay. Passing a compile or a targeted fixture does not complete this milestone.
 
+The opt-in native combat source now owns player health, incoming raider strikes, death presentation and manual delayed revive. Portable life tests and a native authority/collision fixture passed. Life and resume identities remain retained server-session state; health/death and account ownership across a server restart remain unfinished. Next qualification is the ordinary merchant/restart loop, then independent two/four-client reconnect, damage isolation, peer ghost, input restoration and save-failure checks in a separate development test map.
+
 Continue replacing placeholders with detailed original characters, separate equipment pieces, rigged animations, effects, sound, architecture and creatures. Iterate actual rendered views against the original concept before accepting the character. Official reference art is research material and is not redistributed here.
 
 Then extend class skills, enemy behaviors, progression and purposeful regions; add mining, another gathering activity, recipes/upgrades, conversations, companions, mounts and dungeons. A fresh character must reach the main quest ending. Measure performance on the development PC, optimize, and test the packaged game outside the editor.

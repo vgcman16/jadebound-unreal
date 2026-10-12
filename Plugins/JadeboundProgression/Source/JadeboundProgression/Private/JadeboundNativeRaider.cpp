@@ -63,6 +63,7 @@ void AJadeboundNativeRaider::GetLifetimeReplicatedProps(TArray<FLifetimeProperty
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(AJadeboundNativeRaider, Life);
+    DOREPLIFETIME(AJadeboundNativeRaider, Strike);
 }
 float AJadeboundNativeRaider::TakeDamage(float, const FDamageEvent&, AController*, AActor*)
 {
@@ -97,6 +98,7 @@ bool AJadeboundNativeRaider::ApplyValidatedHit(AJadeboundProgressionActor* Recip
     {
         Life.bAlive = false;
         Life.DeathServerTime = Now;
+        CancelNativeStrike(Now);
         bDeathAwardCommitted = false;
         NextAwardCheck = 0;
     }
@@ -109,7 +111,9 @@ void AJadeboundNativeRaider::OnRepLife()
     GetMesh()->SetVisibility(Life.bAlive, true);
     HealthLabel->SetVisibility(Life.bAlive);
     GetCapsuleComponent()->SetCollisionEnabled(Life.bAlive ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-    HealthLabel->SetText(FText::FromString(FString::Printf(TEXT("Courtyard raider  %d/3"),Life.Health)));
+    HealthLabel->SetTextRenderColor(Strike.bWindup ? FColor(255,94,60) : FColor(240,212,167));
+    HealthLabel->SetText(FText::FromString(Strike.bWindup ? TEXT("Raider — strike incoming") :
+        FString::Printf(TEXT("Courtyard raider  %d/3"),Life.Health)));
 }
 void AJadeboundNativeRaider::Tick(float Seconds)
 {
@@ -119,7 +123,9 @@ void AJadeboundNativeRaider::Tick(float Seconds)
     if (const APlayerController* Local = World->GetFirstPlayerController())
         if (Local->IsLocalController() && Local->PlayerCameraManager)
             HealthLabel->SetWorldRotation((Local->PlayerCameraManager->GetCameraLocation() - HealthLabel->GetComponentLocation()).Rotation());
-    if (!HasAuthority() || Life.bAlive) return;
+    if (!HasAuthority()) return;
+    TickNativeStrike();
+    if (Life.bAlive) return;
     const double Now = World->GetTimeSeconds();
     if (!FMath::IsFinite(Now) || Now < 0.0 || !FMath::IsFinite(Life.DeathServerTime) ||
         Life.DeathServerTime < 0.0 || Now < Life.DeathServerTime || !FMath::IsFinite(NextAwardCheck) ||

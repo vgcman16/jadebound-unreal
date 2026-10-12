@@ -54,10 +54,13 @@ private:
     friend struct FJadeboundMerchantBulkSaleTestAccess;
     friend struct FJadeboundAttackWindowTestAccess;
     friend struct FJadeboundRecipientNativeTestAccess;
+    friend struct FJadeboundPlayerLifeTestAccess;
 #endif
     UPROPERTY(Transient) TObjectPtr<AJadeboundNativeRaider> RecipientRaider;
     AJadeboundNativeRaider* GetRecipientRaider() const;
     bool OwnsRecipientModel(const AJadeboundProgressionActor* Model, bool bRequireLivingOwner) const;
+    bool OwnsNativeCombatant(const AJadeboundProgressionActor* Model, bool bRequireLiving) const;
+    AJadeboundProgressionActor* SelectNativeStrikeTarget(const AJadeboundNativeRaider* Enemy) const;
     bool TryCommitRaiderDeath(AJadeboundNativeRaider* Enemy);
     bool AreRecipientSwingsIdle() const;
     UPROPERTY(Transient) TMap<FString, TObjectPtr<AJadeboundProgressionActor>> Models;

@@ -1,4 +1,5 @@
 #include "JadeboundEquipmentPresentationComponent.h"
+#include "JadeboundPlayerLifeComponent.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Brushes/SlateNoResource.h"
@@ -75,7 +76,9 @@ void UJadeboundEquipmentPresentationComponent::ApplyAppearance()
         Weapon->ComponentTags.Remove(FName(TEXT("JadeGlaiveV001")));
         Weapon->SetOnlyOwnerSee(false);
         Weapon->SetOwnerNoSee(false);
-        const bool bVisible = Appearance.WeaponItemId != 0;
+        const auto* PlayerLife = Pawn->FindComponentByClass<UJadeboundPlayerLifeComponent>();
+        const bool bDead = PlayerLife && PlayerLife->GetLife().bInitialized && !PlayerLife->GetLife().IsAlive();
+        const bool bVisible = Appearance.WeaponItemId != 0 && !bDead;
         UStaticMesh* Desired = Appearance.WeaponItemId == 2 ? Appearance.SpearMesh.Get() : Appearance.GlaiveMesh.Get();
         if (bVisible && !Desired) return;
         if (bVisible && Weapon->GetStaticMesh() != Desired)

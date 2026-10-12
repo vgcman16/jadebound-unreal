@@ -5,6 +5,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/SaveGame.h"
 #include "Templates/Function.h"
+#include "JadeboundPlayerLifeComponent.h"
 #include "JadeboundProgressionActor.generated.h"
 
 class APawn;
@@ -29,6 +30,8 @@ class ATextRenderActor;
 class FJadeboundNativeCapture;
 struct FJadeboundNativeCaptureDeleter { void operator()(FJadeboundNativeCapture* Pointer) const; };
 class UPrimitiveComponent;
+namespace Jadebound::Combat::PlayerLife { struct State; }
+struct FJadeboundPlayerLifeDeleter { void operator()(Jadebound::Combat::PlayerLife::State* Pointer) const; };
 struct FInputActionInstance;
 struct FHitResult;
 namespace Jadebound {
@@ -326,6 +329,7 @@ protected:
 
 private:
     friend class AJadeboundDevelopmentGameMode;
+    friend class AJadeboundNativeRaider;
 #if WITH_DEV_AUTOMATION_TESTS
     // Native automation only: no reflected, public, or network entry point.
     friend struct FJadeboundActorBankTestAccess;
@@ -333,10 +337,25 @@ private:
     friend struct FJadeboundAttackWindowTestAccess;
     friend struct FJadeboundRecipientNativeTestAccess;
     friend struct FJadeboundStandaloneWriterTestAccess;
+    friend struct FJadeboundPlayerLifeTestAccess;
     TFunction<IFileHandle*(const FString&)> AutomationJournalOpener;
     static bool EncodeJournalForAutomation(UJadeboundCharacterSave* Save, TArray<uint8>& Bytes);
 #endif
     UPROPERTY(Replicated) bool bDevelopmentModel = false;
+    UPROPERTY(ReplicatedUsing=OnRepNativePlayerLife) FJadeboundPlayerLife NativePlayerLife;
+    TUniquePtr<Jadebound::Combat::PlayerLife::State, FJadeboundPlayerLifeDeleter> NativeLifeState;
+    TWeakObjectPtr<UJadeboundPlayerLifeComponent> PublicLife;
+    FTransform NativeReviveHome;
+    bool bNativeReviveHomeSet = false;
+    bool bNativeReviveInProgress = false;
+    void InitializeNativePlayerLife();
+    void PublishNativePlayerLife();
+    void BindNativePlayerLife();
+    bool ApplyNativePlayerStrike(AJadeboundNativeRaider* Enemy, uint64 StrikeId, uint64 ExpectedGeneration, int64 EnemyLife);
+    bool RequestNativeRevive(uint64 ExpectedGeneration);
+    bool CanNativeRevive(uint64 ExpectedGeneration) const;
+    UFUNCTION(Server, Reliable) void ServerRequestNativeRevive(uint64 ExpectedGeneration);
+    UFUNCTION() void OnRepNativePlayerLife();
     UPROPERTY(Replicated) FString ServerCharacterId;
     UPROPERTY(ReplicatedUsing=OnRepReadiness) bool bServerModelInitialized = false;
     UPROPERTY(Transient) TObjectPtr<UStaticMesh> DevelopmentGlaiveMesh;
