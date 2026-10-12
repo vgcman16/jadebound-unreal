@@ -1,4 +1,4 @@
-# Validation â€” 12 October 2026
+# Validation — 12 October 2026
 
 | Check | Result |
 |---|---|

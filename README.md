@@ -1,4 +1,4 @@
-# Jadebound â€” Unreal source
+# Jadebound — Unreal source
 
 Jadebound is an original PC fantasy MMORPG in development. The intended game combines responsive isometric combat and distinct equipment-focused classes with mythical companions, mounts, gathering, crafting and authored quests.
 
@@ -11,7 +11,7 @@ This repository contains the current Unreal C++ progression plugin and its tests
 - Original weapon presentation hooks and a preserved standalone merchant/combat prototype locally.
 - An opt-in loopback server foundation for two to four profiles, owner-specific progression models, validated requests and retained save writers.
 - Same-server-session resume tickets that retain a character across disconnects. Native transport/gameplay reconnect qualification remains pending.
-- Server-owned 100â€“0 health, telegraphed courtyard strikes, replicated life presentation hooks, and a ten-second manual revive in the opt-in development combat slice. Rendered client gameplay remains pending.
+- Server-owned 100–0 health, telegraphed courtyard strikes, replicated life presentation hooks, and a ten-second manual revive in the opt-in development combat slice. Rendered client gameplay remains pending.
 - Validated incoming hits use a server-world damage sequence, preserving replay protection when the registered raider is replaced. Dead-state action admission reads committed server life.
 - Native healing balm pairs server health with one owned-item consumption. Held-save retries preserve subsequent damage or revive state; health across server restart remains unfinished.
 
