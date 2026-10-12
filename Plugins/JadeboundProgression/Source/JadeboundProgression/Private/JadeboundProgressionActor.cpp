@@ -3931,7 +3931,9 @@ void AJadeboundProgressionActor::ShowMenu(bool Show)
     if (Show)
     {
         CancelLegacyAttackPresentation();
-        TSharedRef<SJadeboundProgressionPanel> Panel = SNew(SJadeboundProgressionPanel).ProgressionActor(TWeakObjectPtr<AJadeboundProgressionActor>(this));
+        TSharedRef<SJadeboundProgressionPanel> Panel = SNew(SJadeboundProgressionPanel)
+            .Tag(FName(TEXT("JadeboundProgressionPanel")))
+            .ProgressionActor(TWeakObjectPtr<AJadeboundProgressionActor>(this));
         MenuWidget = SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
             .BorderBackgroundColor(FLinearColor(.002f,.006f,.004f,.20f)).Padding(0.f)
             .HAlign(HAlign_Fill).VAlign(VAlign_Fill)[Panel];

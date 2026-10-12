@@ -2751,6 +2751,7 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::ActionButton(const FText& Label,
         : (Action == EAction::Equip || Action == EAction::Sell || Action == EAction::Use || Action == EAction::Split) && Selection ? Selection->ItemId
         : Action == EAction::Unequip ? DisplayState.EquippedWeapon : 0;
     TSharedRef<SButton> Button = SNew(SButton)
+        .Tag(FName(*FString::Printf(TEXT("JadeboundAction%d_%d_%d"), static_cast<int32>(Action), Argument, Quantity)))
         .ButtonStyle(Style)
         .IsEnabled(bCanClick).ContentPadding(FMargin(12.f,Action == EAction::Split ? 3.f : 8.f)).HAlign(HAlign_Center)
         .ToolTip(PackTooltip(Tooltip,Label,TooltipItem))
@@ -2969,6 +2970,7 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildInventory()
                 .ContentPadding(FMargin(4.f,3.f)).ToolTip(Tooltip)
                 .OnClicked(this,&SJadeboundProgressionPanel::SelectSlot,Index)[Content];
         }
+        Button->SetTag(FName(*FString::Printf(TEXT("JadeboundSlot%d"), Index)));
         FocusTargets.Add(FName(*FString::Printf(TEXT("Slot-%d"),Index)),Button);
         Grid->AddSlot(Index % 3,Index / 3)[SNew(SBox).WidthOverride(60.f).HeightOverride(58.f)
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder")).Padding(0.f)
@@ -3240,16 +3242,19 @@ void SJadeboundProgressionPanel::RebuildContents()
                 + SHorizontalBox::Slot().FillWidth(1.f).Padding(0.f,0.f,3.f,0.f)
                 [SNew(SButton).ButtonStyle(&SecondaryStyle).ContentPadding(FMargin(3.f,5.f))
                     .ToolTip(PackTooltip(LOCTEXT("EquipmentPageHelp","Inspect your equipped weapon."),LOCTEXT("EquipmentPage","Weapon"),0,210.f))
+                    .Tag(FName(TEXT("JadeboundGearTab")))
                     .OnClicked(this,&SJadeboundProgressionPanel::ShowContextPage,EContextPage::Equipment)
                     [Text(LOCTEXT("EquipmentTabGear","Gear"),12.f,!bSkillsPage && ContextPage==EContextPage::Equipment ? Gold : Muted,true)]]
                 + SHorizontalBox::Slot().FillWidth(1.f).Padding(0.f,0.f,3.f,0.f)
                 [SNew(SButton).ButtonStyle(&SecondaryStyle).ContentPadding(FMargin(3.f,5.f))
                     .IsEnabled(bReady && bMerchantInRange)
                     .ToolTip(PackTooltip(bMerchantInRange ? LOCTEXT("ShopPageHelp","Browse the nearby merchant's wares.") : LOCTEXT("ShopPageRange","Approach the merchant to open the shop."),LOCTEXT("ShopPage","Shop"),0,210.f))
+                    .Tag(FName(TEXT("JadeboundShopTab")))
                     .OnClicked(this,&SJadeboundProgressionPanel::ShowContextPage,EContextPage::Merchant)
                     [Text(LOCTEXT("ShopPage","Shop"),12.f,!bSkillsPage && ContextPage==EContextPage::Merchant ? Gold : Muted,true)]]
                 + SHorizontalBox::Slot().FillWidth(1.f).Padding(0.f,0.f,3.f,0.f)
                 [SNew(SButton).ButtonStyle(&SecondaryStyle).ContentPadding(FMargin(3.f,5.f))
+                    .Tag(FName(TEXT("JadeboundQuestTab")))
                     .OnClicked(this,&SJadeboundProgressionPanel::ShowContextPage,EContextPage::Journey)
                     [Text(LOCTEXT("JourneyTabQuest","Quest"),12.f,!bSkillsPage && ContextPage==EContextPage::Journey ? Gold : Muted,true)]]
                 + SHorizontalBox::Slot().FillWidth(1.f)
