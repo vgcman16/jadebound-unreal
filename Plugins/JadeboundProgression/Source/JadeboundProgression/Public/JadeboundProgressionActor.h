@@ -343,6 +343,7 @@ private:
     friend struct FJadeboundStandaloneWriterTestAccess;
     friend struct FJadeboundPlayerLifeTestAccess;
     friend struct FJadeboundNativeBalmTestAccess;
+    friend struct FJadeboundNativeStrikeIssuanceTestAccess;
     TFunction<IFileHandle*(const FString&)> AutomationJournalOpener;
     static bool EncodeJournalForAutomation(UJadeboundCharacterSave* Save, TArray<uint8>& Bytes);
 #endif

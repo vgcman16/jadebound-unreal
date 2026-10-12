@@ -2,6 +2,7 @@
 #include "JadeboundDevelopmentGameMode.h"
 #include "JadeboundNativeRaider.h"
 #include "Combat/PlayerLifeRules.h"
+#include "Combat/NativeStrikeSequence.h"
 #include "CollisionShape.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
@@ -71,7 +72,7 @@ bool AJadeboundDevelopmentGameMode::OwnsNativeCombatant(const AJadeboundProgress
         Model->Hero->GetWorld() != GetWorld() || Model->Player->GetPawn() != Model->Hero ||
         Model->Hero->GetController() != Model->Player || Model->GetOwner() != Model->Player) return false;
     const FString* Id = ActiveControllers.Find(Model->Player);
-    return Id && *Id == Model->ServerCharacterId && (!Living || Model->NativePlayerLife.IsAlive());
+    return Id && *Id == Model->ServerCharacterId && (!Living || Model->HasLivingPossessedHero());
 }
 bool AJadeboundProgressionActor::ApplyNativePlayerStrike(AJadeboundNativeRaider* Enemy, uint64 StrikeId,
     uint64 ExpectedGeneration, int64 EnemyLife)
@@ -83,15 +84,34 @@ bool AJadeboundProgressionActor::ApplyNativePlayerStrike(AJadeboundNativeRaider*
         !NativeLifeState || !IsValid(Enemy) || Enemy != Mode->GetRecipientRaider() || !Enemy->HasAuthority() ||
         Enemy->GetWorld() != World || Enemy->IsActorBeingDestroyed() || !Enemy->Life.bAlive || Enemy->Life.LifeId != EnemyLife ||
         Enemy->StrikeRecipient.Get() != this || Enemy->StrikePawn.Get() != Hero || Enemy->Strike.StrikeId != StrikeId ||
-        Enemy->Strike.bWindup || Enemy->StrikePlayerGeneration != ExpectedGeneration || !Enemy->IsNativeStrikeReachable(Hero)) return false;
+        Enemy->Strike.bWindup || !Enemy->bStrikeImpactPending || Enemy->StrikePlayerGeneration != ExpectedGeneration ||
+        !Enemy->IsNativeStrikeReachable(Hero)) return false;
     const double Now = World->GetTimeSeconds();
     if (!FMath::IsFinite(Enemy->Strike.ImpactServerTime) || Enemy->Strike.ImpactServerTime < 0 ||
         Now < Enemy->Strike.ImpactServerTime || Now > Enemy->Strike.ImpactServerTime + .20) return false;
-    if (!Jadebound::Combat::PlayerLife::TryDamage(*NativeLifeState, StrikeId, ExpectedGeneration, Now)) return false;
+    // Spend this synchronous impact before any presentation callback. A domain
+    // refusal consumes no health or world sequence; the windup still cannot replay.
+    Enemy->bStrikeImpactPending = false;
+    uint64 CandidateSequence = Mode->LastNativeDamageStrike;
+    const uint64 DamageId = Jadebound::Combat::NativeStrikeSequence::TryIssue(CandidateSequence);
+    auto CandidateLife = *NativeLifeState;
+    if (DamageId == 0 || !Jadebound::Combat::PlayerLife::TryDamage(CandidateLife, DamageId, ExpectedGeneration, Now)) return false;
+    // Both POD writes precede callbacks. Issue at impact, so overlapping windups
+    // landing in either order cannot suppress one another through LastStrike.
+    Mode->LastNativeDamageStrike = CandidateSequence;
+    *NativeLifeState = CandidateLife;
+    const TWeakObjectPtr<AJadeboundProgressionActor> Self(this);
+    auto CanContinue = [&]()
+    {
+        return Self.IsValid() && !Self->IsActorBeingDestroyed() && !bPersistenceEndingPlay &&
+            IsValid(World) && GetWorld() == World && !World->bIsTearingDown && NativeLifeState;
+    };
     if (!Jadebound::Combat::PlayerLife::IsAlive(*NativeLifeState))
     {
         CancelRecipientAttack();
+        if (!CanContinue()) return true; // Damage already committed before callback teardown.
         ShowMenu(false);
+        if (!CanContinue()) return true;
         bAuthorityMenuOpen = false;
     }
     Feedback = FText::FromString(NativeLifeState->Health == 0 ?

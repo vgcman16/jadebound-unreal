@@ -45,6 +45,7 @@ AJadeboundProgressionActor* AJadeboundDevelopmentGameMode::SelectNativeStrikeTar
 void AJadeboundNativeRaider::CancelNativeStrike(double Now)
 {
     Strike.bWindup = false;
+    bStrikeImpactPending = false;
     StrikeRecipient.Reset();
     StrikePawn.Reset();
     StrikePlayerGeneration = 0;
@@ -78,8 +79,12 @@ void AJadeboundNativeRaider::TickNativeStrike()
         NextStrikeAt = Now + RecoverySeconds;
         const TWeakObjectPtr<AJadeboundNativeRaider> Self(this);
         if (Now <= Strike.ImpactServerTime + ImpactWindowSeconds)
+        {
+            bStrikeImpactPending = true;
             Model->ApplyNativePlayerStrike(this, Strike.StrikeId, StrikePlayerGeneration, StrikeEnemyLife);
+        }
         if (!Self.IsValid() || Self->IsActorBeingDestroyed() || World->bIsTearingDown) return;
+        bStrikeImpactPending = false;
         StrikeRecipient.Reset();
         StrikePawn.Reset();
         OnRepLife();

@@ -168,9 +168,10 @@ bool FJadeboundNativeBalmTest::RunTest(const FString& Parameters)
     FPaths::NormalizeDirectoryName(Argument);
     FString Effective = FPaths::ProjectUserDir(); FPaths::NormalizeDirectoryName(Effective);
     if (!FPaths::IsSamePath(Argument, Effective) || FPaths::GetCleanFilename(Argument) != TEXT("UserDir-v001") ||
-        FPaths::GetCleanFilename(FPaths::GetPath(Argument)) != TEXT("Jadebound-P102-A020") ||
+        (FPaths::GetCleanFilename(FPaths::GetPath(Argument)) != TEXT("Jadebound-P102-A020") &&
+         FPaths::GetCleanFilename(FPaths::GetPath(Argument)) != TEXT("Jadebound-P102-A021")) ||
         !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()), Argument))
-    { AddError(TEXT("Fresh exact A020 namespace required; no previous fixture or real character save access.")); return false; }
+    { AddError(TEXT("Fresh admitted native Balm namespace required; no previous fixture or real character save access.")); return false; }
     if (!GEngine || !GEngine->WorldSettingsClass || !IsInGameThread())
     { AddError(TEXT("NativeBalm requires engine settings and the game thread.")); return false; }
     UWorld::InitializationValues Values;
@@ -228,7 +229,7 @@ bool FJadeboundNativeBalmTest::RunTest(const FString& Parameters)
         {
             Paths[I][BankIndex] = Access::Journal(*Models[I], BankIndex);
             if (Paths[I][BankIndex].IsEmpty() || !FPaths::IsUnderDirectory(Paths[I][BankIndex], Argument))
-            { AddError(TEXT("Exact native fixture journal must remain beneath isolated A020.")); return false; }
+            { AddError(TEXT("Exact native fixture journal must remain beneath the isolated admitted fixture.")); return false; }
         }
     }
     auto InstallWriter = [&](int32 I)
@@ -437,7 +438,7 @@ bool FJadeboundNativeBalmTest::RunTest(const FString& Parameters)
         Access::BankSlot(*Models[0]) == BankBeforeReopen && Opens[0] == OpensBeforeReopen &&
         ReadBank(Paths[0][0], LoadedBanks[0]) && ReadBank(Paths[0][1], LoadedBanks[1]) &&
         SameBank(DurableBanks[0], LoadedBanks[0]) && SameBank(DurableBanks[1], LoadedBanks[1]) && !ForeignPath)) return false;
-    AddInfo(TEXT("A020 uses real native handlers, direct server-handler acknowledgments, measured small world frames, catalog purchases, actual journal opener failures/retries/readbacks and new-lease reload. Registry, menu and retry deadlines are explicit trusted fixture setup; no RPC transport, independent-client, actor-scheduler, gameplay/pixels, persistent-health or power-loss proof."));
+    AddInfo(TEXT("Native Balm uses real native handlers, direct server-handler acknowledgments, measured small world frames, catalog purchases, actual journal opener failures/retries/readbacks and new-lease reload. Registry, menu and retry deadlines are explicit trusted fixture setup; no RPC transport, independent-client, actor-scheduler, gameplay/pixels, persistent-health or power-loss proof."));
     return true;
 }
 #endif

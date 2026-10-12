@@ -72,9 +72,10 @@ bool FJadeboundNativePlayerLifeTest::RunTest(const FString& Parameters)
     FString Effective = FPaths::ProjectUserDir();
     FPaths::NormalizeDirectoryName(Effective);
     if (!FPaths::IsSamePath(Argument, Effective) || FPaths::GetCleanFilename(Argument) != TEXT("UserDir-v001") ||
-        FPaths::GetCleanFilename(FPaths::GetPath(Argument)) != TEXT("Jadebound-P102-A019") ||
+        (FPaths::GetCleanFilename(FPaths::GetPath(Argument)) != TEXT("Jadebound-P102-A019") &&
+         FPaths::GetCleanFilename(FPaths::GetPath(Argument)) != TEXT("Jadebound-P102-A021")) ||
         !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()), Argument))
-    { AddError(TEXT("Fresh exact A019 fixture path required; no real save access.")); return false; }
+    { AddError(TEXT("Fresh admitted native life fixture path required; no real save access.")); return false; }
     if (!GEngine || !GEngine->WorldSettingsClass || !IsInGameThread())
     { AddError(TEXT("Engine world settings and game thread are required.")); return false; }
     UWorld::InitializationValues Values;

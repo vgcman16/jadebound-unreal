@@ -54,6 +54,7 @@ private:
     friend struct FJadeboundRecipientNativeTestAccess;
     friend struct FJadeboundPlayerLifeTestAccess;
     friend struct FJadeboundNativeBalmTestAccess;
+    friend struct FJadeboundNativeStrikeIssuanceTestAccess;
 #endif
     UPROPERTY(VisibleAnywhere, Category="Jadebound|Presentation") TObjectPtr<UTextRenderComponent> HealthLabel;
     UPROPERTY(ReplicatedUsing=OnRepLife) FJadeboundRaiderLife Life;
@@ -63,6 +64,8 @@ private:
     uint64 StrikePlayerGeneration = 0;
     int64 StrikeEnemyLife = 0;
     double NextStrikeAt = 0;
+    // Open only around one synchronous server impact, consumed before callbacks.
+    bool bStrikeImpactPending = false;
     void TickNativeStrike();
     void CancelNativeStrike(double Now);
     bool IsNativeStrikeReachable(const APawn* Pawn) const;

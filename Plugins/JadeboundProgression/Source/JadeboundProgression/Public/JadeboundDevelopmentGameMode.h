@@ -56,7 +56,11 @@ private:
     friend struct FJadeboundRecipientNativeTestAccess;
     friend struct FJadeboundPlayerLifeTestAccess;
     friend struct FJadeboundNativeBalmTestAccess;
+    friend struct FJadeboundNativeStrikeIssuanceTestAccess;
 #endif
+    // Server-world damage order survives raider replacement and character rejoin.
+    // Separate from each raider's windup counter; never supplied by a client.
+    uint64 LastNativeDamageStrike = 0;
     UPROPERTY(Transient) TObjectPtr<AJadeboundNativeRaider> RecipientRaider;
     AJadeboundNativeRaider* GetRecipientRaider() const;
     bool OwnsRecipientModel(const AJadeboundProgressionActor* Model, bool bRequireLivingOwner) const;

@@ -7,6 +7,7 @@
 #include "JadeboundMeleePresentationComponent.h"
 #include "JadeboundPersonalDrop.h"
 #include "Combat/RecipientCombatRules.h"
+#include "Combat/PlayerLifeRules.h"
 #include "Combat/RecipientAnimationRules.h"
 #include "Engine/SkeletalMesh.h"
 #include "Persistence/ProgressionSaveV2.h"
@@ -2518,7 +2519,13 @@ bool AJadeboundProgressionActor::HasLivingPossessedHero() const
     if (bReviveWaiting) return false;
     if (!IsValid(Hero) || !IsValid(Player) || Player->GetPawn() != Hero) return false;
     if (bDevelopmentModel && (bRecipientCombatEnabled || NativePlayerLife.bInitialized))
-        return NativePlayerLife.IsAlive() && Hero->GetController() == Player;
+    {
+        // Montage/presentation callbacks can run before public life is refreshed.
+        // Authority must admit actions against the already committed domain life.
+        const bool Living = HasAuthority() ?
+            NativeLifeState && Jadebound::Combat::PlayerLife::IsAlive(*NativeLifeState) : NativePlayerLife.IsAlive();
+        return Living && Hero->GetController() == Player;
+    }
     const auto* Health = Field<FNumericProperty>(Hero, TEXT("Current HP"));
     if (!Health || !Health->IsFloatingPoint()) return false;
     const double Value = Health->GetFloatingPointPropertyValue(Health->ContainerPtrToValuePtr<void>(Hero));
