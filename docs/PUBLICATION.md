@@ -1,0 +1,11 @@
+# Publication scope and provenance
+
+This initial public snapshot includes the Jadebound-authored progression plugin, configuration defaults, development documentation and portable tests. It starts with fresh Git history so local operational history and machine paths are not copied to GitHub. All local projects, content, prototypes, checkpoints, builds and earlier history remain preserved.
+
+Excluded: binary game content, Unreal templates/animations, third-party art, Blender studies, save files, resume receipts, logs, build outputs, caches, credentials, local editor/MCP settings, machine-specific operational scripts and private research attachments. Asset provenance is not yet complete; exclusions do not imply that every template is forbidden to redistribute. Epic Examples and other content have distinct terms: [Unreal Engine agreement](https://www.unrealengine.com/eula/unreal), [Epic content agreement](https://www.unrealengine.com/eula/content), and [Fab terms](https://www.fab.com/eula).
+
+No additional open-source license has been selected. Original work and third-party work retain their respective rights; a public repository is not a grant to relicense excluded assets. See [GitHub's licensing guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository).
+
+The optional bounded native capture output root was changed in this public copy from a private machine directory to the project's Saved directory. Its other admission/resource limits remain. Text line endings and one trailing empty line are normalized for export. The source host project descriptor omits local editor tooling. Local Unreal qualification applies to the development candidate; portable tests validate the exported shared headers. The public capture path change has not been separately exercised in gameplay.
+
+Development tickets are bearer credentials for the same running loopback server. Unreal may log URL options. Never publish real receipts, travel URLs or user saves. These tickets do not establish production authentication, guaranteed client receipt delivery, server-restart identity recovery or online service readiness.

@@ -1,0 +1,25 @@
+/build/
+**/Binaries/
+**/Intermediate/
+**/Saved/
+**/DerivedDataCache/
+.vs/
+.idea/
+.env
+.env.*
+*.log
+*.sav
+*.pdb
+*.obj
+*.exe
+*.dll
+*.pch
+*.pem
+*.pfx
+*.key
+# Binary assets need a separate reviewed provenance and distribution manifest.
+/Content/
+*.uasset
+*.umap
+*.blend
+*.blend1

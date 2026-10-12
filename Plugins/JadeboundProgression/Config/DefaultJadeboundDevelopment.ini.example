@@ -1,0 +1,8 @@
+; Root-owned server-local development configuration. Do not auto-apply.
+; The new test map must explicitly select the development GameMode/subclass.
+; This profile roster is not authenticated accounts; no client profile option.
+[/Script/JadeboundProgression.JadeboundDevelopmentGameMode]
+bEnableLocalDevelopmentFoundation=True
+!DevelopmentCharacterRoster=ClearArray
++DevelopmentCharacterRoster=27b0cbce01df4b6b8f9cf927acaecf11
++DevelopmentCharacterRoster=4a372b5a838f42be9d9a12e04cb24422

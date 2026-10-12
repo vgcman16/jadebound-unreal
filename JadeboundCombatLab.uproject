@@ -1,0 +1,12 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.8",
+  "Category": "Games",
+  "Description": "Jadebound original Unreal fantasy MMORPG source snapshot; game assets are published separately after provenance review.",
+  "Plugins": [
+    {
+      "Name": "JadeboundProgression",
+      "Enabled": true
+    }
+  ]
+}

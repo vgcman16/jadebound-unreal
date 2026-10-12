@@ -1,0 +1,24 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Jadebound Progression",
+  "Description": "Original local progression transactions, equipment presentation, merchant UI and versioned character saves.",
+  "Category": "Jadebound",
+  "CreatedBy": "Jadebound",
+  "CanContainContent": true,
+  "EnabledByDefault": true,
+  "Plugins": [
+    {
+      "Name": "EnhancedInput",
+      "Enabled": true
+    }
+  ],
+  "Modules": [
+    {
+      "Name": "JadeboundProgression",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}
