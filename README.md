@@ -28,4 +28,4 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-See [local development resume](Plugins/JadeboundProgression/Docs/LocalDevelopmentResume.md), [roadmap](docs/ROADMAP.md), and [publication scope](docs/PUBLICATION.md). A public repository does not by itself grant an open-source license; no additional redistribution license has been selected.
+See [validation results](docs/VALIDATION.md), [local development resume](Plugins/JadeboundProgression/Docs/LocalDevelopmentResume.md), [roadmap](docs/ROADMAP.md), and [publication scope](docs/PUBLICATION.md). A public repository does not by itself grant an open-source license; no additional redistribution license has been selected.
