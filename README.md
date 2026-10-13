@@ -8,6 +8,7 @@ This repository contains the current Unreal C++ progression plugin and its tests
 
 - Twelve-slot inventory, seven item definitions, stack limits, priced buying/selling, weapon equip/unequip and loot bookkeeping.
 - One tracked quest with guarded rewards, revision-checked transactions and automatic journal persistence.
+- Supported V2 builds refuse newer V3 save entries before loading retained history, including empty files and directory collisions. V3 migration and torso equipment are still unfinished.
 - Original weapon presentation hooks and a preserved standalone merchant/combat prototype locally.
 - An opt-in loopback server foundation for two to four profiles, owner-specific progression models, validated requests and retained save writers.
 - Same-server-session resume tickets that retain a character across disconnects. Native transport/gameplay reconnect qualification remains pending.

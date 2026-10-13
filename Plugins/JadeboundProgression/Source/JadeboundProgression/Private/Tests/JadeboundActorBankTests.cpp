@@ -32,6 +32,8 @@ struct FJadeboundActorBankTestAccess
     static void SetOpener(AJadeboundProgressionActor& Actor, TFunction<IFileHandle*(const FString&)> Opener)
     { Actor.AutomationJournalOpener = MoveTemp(Opener); }
     static bool Read(AJadeboundProgressionActor& Actor, bool bInitial = true) { return Actor.ReadSave(bInitial); }
+    static const IFileHandle* ForwardGuardLease(const AJadeboundProgressionActor& Actor)
+    { return Actor.DevelopmentWriterLease.Get(); }
     static bool BuyMoonleafOnce(AJadeboundProgressionActor& Actor)
     {
         const auto Result = Actor.Core->Buy(Jadebound::ItemId::Moonleaf, 1);
@@ -172,7 +174,8 @@ bool WriteOwned(const FString& Path, const TArray<uint8>& Bytes)
 bool IsIsolatedUserDir(FString& Out)
 {
     FString Argument;
-    if (!FParse::Param(FCommandLine::Get(), TEXT("JadeboundActorBankTests")) ||
+    const bool bForwardGuard = FParse::Param(FCommandLine::Get(), TEXT("JadeboundGuardedV2AdmissionTests"));
+    if ((!bForwardGuard && !FParse::Param(FCommandLine::Get(), TEXT("JadeboundActorBankTests"))) ||
         !FParse::Value(FCommandLine::Get(), TEXT("UserDir="), Argument) ||
         Argument.IsEmpty() || FPaths::IsRelative(Argument)) return false;
     Argument.ReplaceInline(TEXT("\\"), TEXT("/"));
@@ -183,7 +186,7 @@ bool IsIsolatedUserDir(FString& Out)
     FString Effective = FPaths::ProjectUserDir();
     FPaths::NormalizeDirectoryName(Effective);
     const FString Parent = FPaths::GetCleanFilename(FPaths::GetPath(Argument));
-    const FString Prefix(TEXT("Jadebound-P102-A"));
+    const FString Prefix(bForwardGuard ? TEXT("Jadebound-S118-A") : TEXT("Jadebound-P102-A"));
     const FString Attempt = Parent.Mid(Prefix.Len());
     if (!FPaths::IsSamePath(Argument, Effective) || FPaths::GetCleanFilename(Argument) != TEXT("UserDir-v001") ||
         !Parent.StartsWith(Prefix, ESearchCase::CaseSensitive) || Attempt.Len() != 3) return false;
@@ -207,7 +210,7 @@ struct FScope
         FString UserDir;
         if (!IsInGameThread() || !GEngine || !GEngine->WorldSettingsClass)
         { Test.AddError(TEXT("Initialized game-thread engine/world settings required.")); return; }
-        if (!IsIsolatedUserDir(UserDir)) { Test.AddError(TEXT("Actor-bank test requires explicit opt-in and fresh Source102 UserDir.")); return; }
+        if (!IsIsolatedUserDir(UserDir)) { Test.AddError(TEXT("Actor-bank test requires explicit opt-in and a fresh scoped UserDir.")); return; }
         Id = FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower();
         if (!Jadebound::Development::IsCharacterId(Id)) { Test.AddError(TEXT("Canonical test identity failed.")); return; }
         for (int32 Version = 0; Version < 2; ++Version)
@@ -872,4 +875,6 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
     AddInfo(TEXT("Synthetic nonempty v2 actor-bank pair/real IO regression only; no native enemy/death, final-hit ownership, public pickup/range, animation/visual, game restart, network, power-loss or elapsed-scheduler acceptance."));
     return true;
 }
+#include "Tests/JadeboundGuardedV2ActorBankTests.inl"
+
 #endif

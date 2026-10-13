@@ -3400,6 +3400,21 @@ bool AJadeboundProgressionActor::ReadSave(bool Initial)
             FText::FromString(TEXT("Your character save needs recovery. Existing files are protected.")));
         return false;
     }
+    // Supported V2 startup cannot resume old history once a forward bank name
+    // exists. Presence precedes validity; a directory is also a collision.
+    // The original writer lease remains held throughout this refusal.
+    IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
+    for (int32 Slot = 0; Slot < 2; ++Slot)
+    {
+        FString Forward;
+        if (!Jadebound::Persistence::TryForwardV3JournalPath(bDevelopmentModel, GetSaveCharacterId(), Slot, Forward) ||
+            Files.FileExists(*Forward) || Files.DirectoryExists(*Forward) || Files.GetStatData(*Forward).bIsValid)
+        {
+            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
+                FText::FromString(TEXT("This character has a newer save format or a conflicting save entry. Use the matching build; existing files are protected.")));
+            return false; // No old bank read, migration, replacement or grant.
+        }
+    }
     // Format boundary: even a partial first v2 bank forbids legacy fallback.
     const bool bUseV2 = IFileManager::Get().FileExists(*V2Paths[0]) || IFileManager::Get().FileExists(*V2Paths[1]);
     UJadeboundCharacterSave* Best = nullptr;

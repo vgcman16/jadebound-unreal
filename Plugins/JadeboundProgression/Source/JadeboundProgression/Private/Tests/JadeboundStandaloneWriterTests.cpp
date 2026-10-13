@@ -150,7 +150,8 @@ bool SameBanks(const FBanks& A, const FBanks& B)
 }
 bool OwnedUser(FString& User)
 {
-    if (!FParse::Param(FCommandLine::Get(), TEXT("JadeboundStandaloneWriterTests")) ||
+    const bool bForwardGuard = FParse::Param(FCommandLine::Get(), TEXT("JadeboundGuardedV2AdmissionTests"));
+    if ((!bForwardGuard && !FParse::Param(FCommandLine::Get(), TEXT("JadeboundStandaloneWriterTests"))) ||
         !FParse::Value(FCommandLine::Get(), TEXT("UserDir="), User) || User.IsEmpty() || FPaths::IsRelative(User)) return false;
     User.ReplaceInline(TEXT("\\"), TEXT("/"));
     TArray<FString> Parts; User.ParseIntoArray(Parts, TEXT("/"), true);
@@ -158,7 +159,7 @@ bool OwnedUser(FString& User)
     FPaths::NormalizeDirectoryName(User);
     FString Effective = FPaths::ProjectUserDir(); FPaths::NormalizeDirectoryName(Effective);
     const FString Parent = FPaths::GetCleanFilename(FPaths::GetPath(User));
-    const FString Prefix(TEXT("Jadebound-P102-A"));
+    const FString Prefix(bForwardGuard ? TEXT("Jadebound-S118-A") : TEXT("Jadebound-P102-A"));
     const FString Attempt = Parent.Mid(Prefix.Len());
     if (!Parent.StartsWith(Prefix, ESearchCase::CaseSensitive) || Attempt.Len() != 3 || Attempt == TEXT("000")) return false;
     for (TCHAR Ch : Attempt) if (Ch < TEXT('0') || Ch > TEXT('9')) return false;
@@ -488,4 +489,6 @@ bool FJadeboundStandaloneWriterLifecycleTest::RunTest(const FString&)
     AddInfo(TEXT("Production standalone lifecycle, real Windows sharing, exact retained bank bytes and controlled fixture-clock retry guard/ownership only; no viewport/input, independent client, network, gameplay or elapsed production-backoff measurement."));
     return true;
 }
+#include "Tests/JadeboundGuardedV2StandaloneTests.inl"
+
 #endif // WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS

@@ -162,6 +162,20 @@ bool TryJournalPath(bool bDevelopment, const FString& CharacterId, int32 Slot, b
     return true;
 }
 
+bool TryForwardV3JournalPath(bool bDevelopment, const FString& CharacterId, int32 Slot, FString& Out)
+{
+    static_assert(SnapshotVersion == 2, "Guarded V2 admission must be reviewed when integrating V3");
+    Out.Reset();
+    FString Current;
+    // Reuse exact authority-owned current identity/slot validation and directory.
+    if (!TryJournalPath(bDevelopment, CharacterId, Slot, true, Current)) return false;
+    const TCHAR* Name = bDevelopment
+        ? (Slot == 0 ? TEXT("Progression_V3_A.sav") : TEXT("Progression_V3_B.sav"))
+        : (Slot == 0 ? TEXT("Jadebound_Traveler01_Progression_V3_A.sav") : TEXT("Jadebound_Traveler01_Progression_V3_B.sav"));
+    Out = FPaths::Combine(FPaths::GetPath(Current), Name);
+    return true;
+}
+
 bool BuildMigrationCandidate(const JadeboundLegacyV1::Snapshot& Legacy, Snapshot& Out)
 {
     Snapshot Candidate;
