@@ -7,7 +7,7 @@ This repository contains the current Unreal C++ progression plugin and its tests
 ## Current implementation
 
 - Twelve-slot inventory, seven item definitions, stack limits, priced buying/selling, weapon equip/unequip and loot bookkeeping.
-- Merchant tooltips prefer the shop's top edge, and pack details use wrapped text with a separate Split row. Both changes have targeted local gameplay evidence at 1280×720; broader layout and finished interface art remain under review.
+- Merchant and inventory tooltips prefer their own panel's top edge. Pack details wrap completely and keep Split on a separate row. Local 1280×720 gameplay shows a full selected Ore card and readable disabled-Split help clearing the hero; broader layouts and finished interface art remain under review.
 - One tracked quest with guarded rewards, revision-checked transactions and automatic journal persistence.
 - Supported V2 builds refuse newer V3 save entries before loading retained history, including empty files and directory collisions. V3 migration and torso equipment are still unfinished.
 - Original weapon presentation hooks and a preserved standalone merchant/combat prototype locally.

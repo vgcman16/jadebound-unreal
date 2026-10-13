@@ -884,9 +884,12 @@ public:
         const TSharedPtr<SWidget> Shelf=MerchantShelf.Pin();
         const bool bMerchantSource=Shelf.IsValid() && Path.Widgets.ContainsByPredicate(
             [&Shelf](const TWeakPtr<SWidget>& Weak) { return Weak.Pin()==Shelf; });
+        const TSharedPtr<SWidget> Pack=RightPanel.Pin();
+        const bool bPackSource=Pack.IsValid() && Path.Widgets.ContainsByPredicate(
+            [&Pack](const TWeakPtr<SWidget>& Weak) { return Weak.Pin()==Pack; });
         FVector2D At;
         if (!Place(Local,Size,Cursor,Avoid,bCenter ? &Left : nullptr,bCenter ? &Right : nullptr,
-            bMerchantSource && bCenter ? &Left : nullptr,At)) return false;
+            bMerchantSource && bCenter ? &Left : nullptr,bPackSource && bCenter ? &Right : nullptr,At)) return false;
         TooltipBox->SetWidthOverride(FOptionalSize(static_cast<float>(Size.X)));
         TooltipBox->SetContent(Content.ToSharedRef());
         TooltipSlot->SetPadding(FMargin(static_cast<float>(At.X),static_cast<float>(At.Y),0.f,0.f));
@@ -924,7 +927,7 @@ private:
     }
     static bool Place(const FVector2D& Local,const FVector2D& Size,const FVector2D& Cursor,
         const TArray<FSlateRect>& Avoid,const FSlateRect* Left,const FSlateRect* Right,
-        const FSlateRect* MerchantDock,FVector2D& Out)
+        const FSlateRect* MerchantDock,const FSlateRect* PackDock,FVector2D& Out)
     {
         const double Margin=8.0,Gap=12.0,MaxX=Local.X-Margin-Size.X,MaxY=Local.Y-Margin-Size.Y;
         if (MaxX<Margin || MaxY<Margin) return false;
@@ -934,6 +937,10 @@ private:
         // a candidate; existing viewport and protected-widget checks still apply.
         if (MerchantDock)
         { X.Add(MerchantDock->Right+Gap);Y.Add(MerchantDock->Top); }
+        // Pack details prefer its left edge at the pack's top. This is a
+        // layout candidate, not a claim to avoid every world actor or label.
+        else if (PackDock)
+        { X.Add(PackDock->Left-Gap-Size.X);Y.Add(PackDock->Top); }
         // Other sources retain the actual clear center between menu panels, near the source's
         // vertical level, then test cursor/viewport and every exclusion edge.
         if (Left && Right && Right->Left-Left->Right>=Size.X+2.0*Gap)
