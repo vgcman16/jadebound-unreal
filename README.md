@@ -15,6 +15,8 @@ This repository contains the current Unreal C++ progression plugin and its tests
 - Validated incoming hits use a server-world damage sequence, preserving replay protection when the registered raider is replaced. Dead-state action admission reads committed server life.
 - Native healing balm pairs server health with one owned-item consumption. Held-save retries preserve subsequent damage or revive state; health across server restart remains unfinished.
 
+Local standalone full-inventory refusals, useful owned healing, retained loot recovery, matching-stack purchases and saved-character reopening have passed a targeted gameplay continuation. These checks do not qualify multiplayer transport or the full release.
+
 Armor swapping, complete class skill sets, gathering/crafting, companions, mounts, dungeons, the main quest ending and production online infrastructure remain unfinished. The art direction is still under review.
 
 ## Build the source
