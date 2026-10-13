@@ -2345,9 +2345,9 @@ public:
                 [SNew(SScaleBox).Stretch(EStretch::ScaleToFit).StretchDirection(EStretchDirection::DownOnly)
                     [SNew(SBox).WidthOverride(252.f).HeightOverride(380.f)[Args._LeftPanel.ToSharedRef()]]]
             + SConstraintCanvas::Slot().Anchors(FAnchors(1.f,0.f)).Alignment(FVector2D(1.f,0.f))
-                .Offset(TAttribute<FMargin>::CreateLambda([this]() { return FMargin(-16.f*Fit,16.f*Fit,232.f*Fit,432.f*Fit); }))
+                .Offset(TAttribute<FMargin>::CreateLambda([this]() { return FMargin(-16.f*Fit,16.f*Fit,232.f*Fit,552.f*Fit); }))
                 [SNew(SScaleBox).Stretch(EStretch::ScaleToFit).StretchDirection(EStretchDirection::DownOnly)
-                    [SNew(SBox).WidthOverride(232.f).HeightOverride(432.f)[Args._RightPanel.ToSharedRef()]]]
+                    [SNew(SBox).WidthOverride(232.f).HeightOverride(552.f)[Args._RightPanel.ToSharedRef()]]]
             + SConstraintCanvas::Slot().Anchors(FAnchors(.5f,1.f)).Alignment(FVector2D(.5f,1.f))
                 .Offset(TAttribute<FMargin>::CreateLambda([this]() { return FMargin(0.f,-16.f*Fit,548.f*Fit,128.f*Fit); }))
                 [SNew(SScaleBox).Stretch(EStretch::ScaleToFit).StretchDirection(EStretchDirection::DownOnly)
@@ -2358,9 +2358,9 @@ public:
         SCompoundWidget::Tick(Geometry,Now,Delta);
         const FVector2D Size=Geometry.GetLocalSize();
         if (!FMath::IsFinite(Size.X) || !FMath::IsFinite(Size.Y) || Size.X<=1.0 || Size.Y<=1.0) return;
-        // 676 leaves a 160-unit world gap between side panels. 600 includes
-        // the 432-unit bag, 128-unit tray, 8-unit gap and 16-unit margins.
-        const float Next=FMath::Max(.01f,FMath::Min(1.f,FMath::Min(static_cast<float>(Size.X)/676.f,static_cast<float>(Size.Y)/600.f)));
+        // 676 leaves a 160-unit world gap between side panels. 720 includes
+        // the 552-unit bag, 128-unit tray, 8-unit gap and 16-unit margins.
+        const float Next=FMath::Max(.01f,FMath::Min(1.f,FMath::Min(static_cast<float>(Size.X)/676.f,static_cast<float>(Size.Y)/720.f)));
         if (!FMath::IsNearlyEqual(Fit,Next,.0001f))
         { Fit=Next;Invalidate(EInvalidateWidgetReason::Layout); }
     }
@@ -2987,7 +2987,8 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildInventory()
             [Badge(FText::Format(LOCTEXT("PackCapacity","{0} / 12"),FText::AsNumber(Occupied)),Gold)]]
         + SVerticalBox::Slot().FillHeight(1.f)
         [SAssignNew(InventoryScroll,SScrollBox).ScrollBarThickness(FVector2f(5.f,5.f)).ConsumeMouseWheel(EConsumeMouseWheel::Always)
-            .ScrollWhenFocusChanges(EScrollWhenFocusChanges::NoScroll)
+            .ScrollWhenFocusChanges(EScrollWhenFocusChanges::InstantScroll)
+            .NavigationDestination(EDescendantScrollDestination::IntoView).NavigationScrollPadding(2.f)
             + SScrollBox::Slot()[Grid]];
 }
 
@@ -3111,7 +3112,10 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildSelection()
 
 TSharedRef<SWidget> SJadeboundProgressionPanel::BuildMerchant()
 {
-    SAssignNew(CatalogScroll,SScrollBox).ScrollBarVisibility(EVisibility::Visible).ScrollBarThickness(FVector2f(5.f,5.f));
+    SAssignNew(CatalogScroll,SScrollBox).ScrollBarVisibility(EVisibility::Visible).ScrollBarThickness(FVector2f(5.f,5.f))
+        .ScrollBarAlwaysVisible(true).ConsumeMouseWheel(EConsumeMouseWheel::Always)
+        .ScrollWhenFocusChanges(EScrollWhenFocusChanges::InstantScroll)
+        .NavigationDestination(EDescendantScrollDestination::IntoView).NavigationScrollPadding(4.f);
     TSharedRef<SVerticalBox> Shelf=SNew(SVerticalBox);
     for (const FJadeboundItemView& Item : Definitions)
     {
@@ -3274,8 +3278,13 @@ void SJadeboundProgressionPanel::RebuildContents()
                     + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f,0.f,6.f,0.f)[Text(FText::AsNumber(DisplayState.Coins),14.f,Gold,true)]
                     + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                     [ActionButton(LOCTEXT("SpatialClose","X"),LOCTEXT("CloseHelp","Close the pack and return to your journey."),true,EAction::Close)]]]
-            + SVerticalBox::Slot().FillHeight(1.f)[BuildInventory()]
-            + SVerticalBox::Slot().AutoHeight().Padding(0.f,4.f,0.f,0.f)[SNew(SBox).MinDesiredHeight(88.f)[(SelectionFooter=BuildSelection()).ToSharedRef()]]];
+            // The twelve-slot grid owns a stable height; long selection details scroll separately.
+            + SVerticalBox::Slot().AutoHeight()[SNew(SBox).HeightOverride(280.f)[BuildInventory()]]
+            + SVerticalBox::Slot().FillHeight(1.f).Padding(0.f,4.f,0.f,0.f)
+            [SNew(SScrollBox).ScrollBarThickness(FVector2f(5.f,5.f)).ScrollBarAlwaysVisible(true)
+                .ConsumeMouseWheel(EConsumeMouseWheel::Always).ScrollWhenFocusChanges(EScrollWhenFocusChanges::InstantScroll)
+                .NavigationDestination(EDescendantScrollDestination::IntoView).NavigationScrollPadding(4.f)
+                + SScrollBox::Slot()[(SelectionFooter=BuildSelection()).ToSharedRef()]]];
     TSharedRef<SWidget> BottomTray = SNew(SJadeboundArtBorder).Padding(FMargin(8.f,6.f))
         [SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight()
