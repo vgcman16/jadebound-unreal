@@ -817,12 +817,14 @@ public:
         SLATE_ARGUMENT(TArray<TWeakPtr<SWidget>>, ProtectedWidgets)
         SLATE_ARGUMENT(TWeakPtr<SWidget>, LeftPanel)
         SLATE_ARGUMENT(TWeakPtr<SWidget>, RightPanel)
+        SLATE_ARGUMENT(TWeakPtr<SWidget>, MerchantShelf)
     SLATE_END_ARGS()
     void Construct(const FArguments& Args)
     {
         SetVisibility(EVisibility::SelfHitTestInvisible);
         MainContent=Args._Content.Widget;
         ProtectedWidgets=Args._ProtectedWidgets;LeftPanel=Args._LeftPanel;RightPanel=Args._RightPanel;
+        MerchantShelf=Args._MerchantShelf;
         SOverlay::Construct(SOverlay::FArguments()
             + SOverlay::Slot()[MainContent.ToSharedRef()]
             + SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top).Expose(TooltipSlot)
@@ -877,8 +879,14 @@ public:
         }
         FSlateRect Left,Right;
         const bool bCenter=WidgetRect(LeftPanel,Geometry,Local,Left) && WidgetRect(RightPanel,Geometry,Local,Right);
+        // Classify the actual opening source by the current owned shelf path,
+        // never its item text or a retained cursor position after scrolling.
+        const TSharedPtr<SWidget> Shelf=MerchantShelf.Pin();
+        const bool bMerchantSource=Shelf.IsValid() && Path.Widgets.ContainsByPredicate(
+            [&Shelf](const TWeakPtr<SWidget>& Weak) { return Weak.Pin()==Shelf; });
         FVector2D At;
-        if (!Place(Local,Size,Cursor,Avoid,bCenter ? &Left : nullptr,bCenter ? &Right : nullptr,At)) return false;
+        if (!Place(Local,Size,Cursor,Avoid,bCenter ? &Left : nullptr,bCenter ? &Right : nullptr,
+            bMerchantSource && bCenter ? &Left : nullptr,At)) return false;
         TooltipBox->SetWidthOverride(FOptionalSize(static_cast<float>(Size.X)));
         TooltipBox->SetContent(Content.ToSharedRef());
         TooltipSlot->SetPadding(FMargin(static_cast<float>(At.X),static_cast<float>(At.Y),0.f,0.f));
@@ -915,12 +923,18 @@ private:
         return Out.Right>Out.Left && Out.Bottom>Out.Top;
     }
     static bool Place(const FVector2D& Local,const FVector2D& Size,const FVector2D& Cursor,
-        const TArray<FSlateRect>& Avoid,const FSlateRect* Left,const FSlateRect* Right,FVector2D& Out)
+        const TArray<FSlateRect>& Avoid,const FSlateRect* Left,const FSlateRect* Right,
+        const FSlateRect* MerchantDock,FVector2D& Out)
     {
         const double Margin=8.0,Gap=12.0,MaxX=Local.X-Margin-Size.X,MaxY=Local.Y-Margin-Size.Y;
         if (MaxX<Margin || MaxY<Margin) return false;
         TArray<double> X,Y;
-        // Prefer the actual clear center between menu panels, near the source's
+        // Merchant details start beside the shop at its top, keeping the
+        // central world scene visible in the accepted layout. This is only
+        // a candidate; existing viewport and protected-widget checks still apply.
+        if (MerchantDock)
+        { X.Add(MerchantDock->Right+Gap);Y.Add(MerchantDock->Top); }
+        // Other sources retain the actual clear center between menu panels, near the source's
         // vertical level, then test cursor/viewport and every exclusion edge.
         if (Left && Right && Right->Left-Left->Right>=Size.X+2.0*Gap)
             X.Add((Left->Right+Right->Left-Size.X)*.5);
@@ -953,7 +967,7 @@ private:
     TSharedPtr<SBox> TooltipBox;
     SOverlay::FOverlaySlot* TooltipSlot=nullptr;
     TArray<TWeakPtr<SWidget>> ProtectedWidgets;
-    TWeakPtr<SWidget> LeftPanel,RightPanel;
+    TWeakPtr<SWidget> LeftPanel,RightPanel,MerchantShelf;
 };
 
 FText PlayerFeedback(const FText& Raw, bool bDevelopment)
@@ -3080,25 +3094,28 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildSelection()
         FText::Format(LOCTEXT("SellStackLabel", "Sell stack ({0})"), FText::AsNumber(Slot->Count)),
         WithRestriction(bQuoted ? FText::Format(LOCTEXT("SellStackHelp", "Sell all {0} displayed items for {1} jade coins in one saved transaction."), FText::AsNumber(Slot->Count), FText::AsNumber(Total)) : StackWhy, StackWhy),
         StackWhy.IsEmpty(), EAction::Sell, SelectedSlot, Slot->Count, Item->ItemId) : SNullWidget::NullWidget;
-    return SNew(SJadeboundSectionBorder).Padding(FMargin(4.f,3.f))
+    // 232-unit pack minus outer inset (16), scrollbar (5 + 4 padding) and
+    // card inset (20) leaves 187 units. Reserve one unit for layout rounding.
+    constexpr float SelectionTextWidth = 186.f;
+    return SNew(SJadeboundSectionBorder).Padding(FMargin(10.f,8.f))
         .ToolTip(PackTooltip(bOccupied ? ItemTooltip(*Item) : LOCTEXT("SelectDetails", "Select a filled slot to inspect or equip its item."),
             bOccupied ? Item->Name : LOCTEXT("SelectionHeading", "SELECTED ITEM"), bOccupied ? Item->ItemId : 0))
     [SNew(SVerticalBox)
         + SVerticalBox::Slot().AutoHeight()
         [SNew(STextBlock).Text(bOccupied ? Item->Name : LOCTEXT("SelectHint", "Choose an item"))
-            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Medium"),13.f)).ColorAndOpacity(Ink).AutoWrapText(true)]
-        + SVerticalBox::Slot().AutoHeight()
-        [SNew(SHorizontalBox)
-            + SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(0.f,0.f,4.f,0.f)
-            [Text(bOccupied ? FText::Format(LOCTEXT("SelectedStack", "Stack {0} / {1}"), FText::AsNumber(Slot->Count), FText::AsNumber(Item->StackLimit))
-                : LOCTEXT("CompactInspectHint", "Select a pack slot to inspect"),11.f,Muted)]
-            + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-            [ActionButton(LOCTEXT("SplitOne", "Split 1"), WithRestriction(
-                LOCTEXT("SplitOneHelp", "Move one item from this stack into the first empty pack slot. No items are created; at least one remains in this stack."),
-                RenderedSelectedSplitRestriction), RenderedSelectedSplitRestriction.IsEmpty(), EAction::Split, SelectedSlot)]]
+            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Medium"),13.f)).ColorAndOpacity(Ink).WrapTextAt(SelectionTextWidth).AutoWrapText(false)]
+        + SVerticalBox::Slot().AutoHeight().Padding(0.f,4.f,0.f,0.f)
+        [SNew(STextBlock).Text(bOccupied ? FText::Format(LOCTEXT("SelectedStack", "Stack {0} / {1}"), FText::AsNumber(Slot->Count), FText::AsNumber(Item->StackLimit))
+            : LOCTEXT("CompactInspectHint", "Select a pack slot to inspect"))
+            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"),11.f)).ColorAndOpacity(Muted)
+            .WrapTextAt(SelectionTextWidth).AutoWrapText(false)]
+        + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right).Padding(0.f,4.f,0.f,0.f)
+        [ActionButton(LOCTEXT("SplitOne", "Split 1"), WithRestriction(
+            LOCTEXT("SplitOneHelp", "Move one item from this stack into the first empty pack slot. No items are created; at least one remains in this stack."),
+            RenderedSelectedSplitRestriction), RenderedSelectedSplitRestriction.IsEmpty(), EAction::Split, SelectedSlot)]
         + SVerticalBox::Slot().AutoHeight()
         [SNew(STextBlock).Text(Value).Visibility(Value.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
-            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"),11.f)).ColorAndOpacity(Gold).AutoWrapText(true)]
+            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"),11.f)).ColorAndOpacity(Gold).WrapTextAt(SelectionTextWidth).AutoWrapText(false)]
         + SVerticalBox::Slot().AutoHeight().Padding(0.f,2.f,0.f,0.f)
         [SNew(SHorizontalBox)
             + SHorizontalBox::Slot().FillWidth(bPrimary ? 1.f : 0.f).Padding(0.f,0.f,bPrimary ? 4.f : 0.f,0.f)[Primary]
@@ -3107,7 +3124,7 @@ TSharedRef<SWidget> SJadeboundProgressionPanel::BuildSelection()
         + SVerticalBox::Slot().AutoHeight().Padding(0.f,bStackSale ? 2.f : 0.f,0.f,0.f)[Bulk]
         + SVerticalBox::Slot().AutoHeight().Padding(0.f,2.f,0.f,0.f)
         [SNew(STextBlock).Text(ActionReason).Visibility(ActionReason.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
-            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"),11.f)).ColorAndOpacity(Warning).AutoWrapText(true)]];
+            .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"),11.f)).ColorAndOpacity(Warning).WrapTextAt(SelectionTextWidth).AutoWrapText(false)]];
 }
 
 TSharedRef<SWidget> SJadeboundProgressionPanel::BuildMerchant()
@@ -3321,6 +3338,7 @@ void SJadeboundProgressionPanel::RebuildContents()
     [SNew(SDPIScaler).Visibility(EVisibility::SelfHitTestInvisible)
         .DPIScale(TAttribute<float>::CreateLambda([Weak=ProgressionActor]() { return GameplayHudScaleFloor(Weak); }))
         [SNew(SJadeboundTooltipHost).ProtectedWidgets(TooltipExclusions).LeftPanel(LeftPanel).RightPanel(RightPanel)
+            .MerchantShelf(CatalogScroll)
             [SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)
                 + SOverlay::Slot()
                     [SNew(SJadeboundSpatialPackLayout).LeftPanel(LeftPanel).RightPanel(RightPanel).BottomTray(BottomTray)]
