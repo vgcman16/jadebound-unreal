@@ -1,4 +1,4 @@
-# Validation — 12 October 2026
+# Validation — 13 October 2026
 
 | Check | Result |
 |---|---|
@@ -44,7 +44,11 @@ A later fresh standalone profile qualified the legacy character's natural death 
 
 That ghost/revive check used the legacy 10-HP hero displayed as 100 percent, not the separate opt-in development life model. It qualifies the tested local application controls and cold progression restoration. Enter, menu/death input races, forged repeated revive requests, persistent health across server restart, consumable use and independent multiplayer remain unqualified. One waiting capture still shows a shader-preparation notice; the template characters and exposed terrain edges remain unaccepted presentation. These screenshots are not a gameplay video. Earlier failed teardown crashes remain unresolved.
 
-The next full-pack continuation compiled locally with zero compiler errors or warnings, but its actual Game-world test failed because the merchant scroll offset did not move before the Balm purchase. The existing completed-quest r9 character and both journal banks remained unchanged. One initial money-refusal still was captured. Failed-test shutdown encountered a RenderCore/D3D12RHI access violation and exited with code 3; this unresolved fault has not been established as an out-of-memory failure. Full-pack capacity, retained-drop recovery, injured Balm consumption and the corresponding cold restart remain unqualified. The new private harness remains excluded from this repository.
+Two earlier full-pack attempts failed before buying Balm and left the completed-quest r9 character unchanged. The second recorded an offscreen button with zero cached bounds, causing the test to scroll upward from offset zero. A subsequent test correction used the current arranged widget geometry; its fresh Unreal build passed with zero compiler errors or warnings and a normal process exit.
+
+The corrected Game-world run bought one Balm for three coins, defeated the raider across eight lives and collected each owned ore drop. Seventeen real journal commits advanced the existing character from r9 to r26, leaving seven coins, one Balm and sixteen ore; the equipped glaive and completed quest remained intact. Both physical journal banks were independently verified against the native receipt. The run then failed while returning to the merchant: an NPC click opens the shop at the normal interaction boundary, which can precede the test's required safe distance from the raider. Failure-time health and position were not captured, so the precise failed safety condition remains uncertain. The next test must continue from the actual r26 saves using safe terrain navigation before merchant interaction, with fresh encounter counters.
+
+Failed-test shutdown again encountered a RenderCore/D3D12RHI access violation and exited with code 3. This remains unresolved and has not been established as an out-of-memory failure. Two partial raw stills were fully decoded and individually reviewed; they are not a video or acceptance of the visual design. Full-pack capacity, retained-drop recovery, injured Balm consumption and the corresponding cold restart remain unqualified. The private live-input harness remains excluded from this repository.
 
 Detailed original characters, finished interface art, gameplay video, full-inventory/invalid-purchase/consumable checks, independent multiplayer and packaged-game acceptance remain pending. The private live-input harnesses and operational evidence remain local.
 
