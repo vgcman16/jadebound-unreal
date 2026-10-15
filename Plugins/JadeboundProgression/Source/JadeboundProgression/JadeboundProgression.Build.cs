@@ -6,7 +6,7 @@ public class JadeboundProgression : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine" });
-        PrivateDependencyModuleNames.AddRange(new[] { "Slate", "SlateCore", "UMG", "InputCore", "EnhancedInput", "Json", "JsonUtilities", "NavigationSystem" });
+        PrivateDependencyModuleNames.AddRange(new[] { "Slate", "SlateCore", "UMG", "InputCore", "EnhancedInput", "Json", "JsonUtilities", "NavigationSystem", "AnimGraphRuntime" });
         if (Target.Type == TargetType.Editor)
         {
             PrivateDependencyModuleNames.Add("AutomationDriver");

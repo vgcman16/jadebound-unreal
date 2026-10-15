@@ -15,7 +15,9 @@ constexpr std::array<ItemDefinition, DefinitionCount> Catalog{{
     {ItemId::Moonleaf, "moonleaf", "Moonleaf", 20, 2, 1, true, true, false},
     {ItemId::JadeParcel, "jade_parcel", "Jade Parcel", 1, 0, 0, false, false, false},
     {ItemId::JadeShard, "jade_shard", "Jade Shard", 50, 0, 2, false, true, false},
-    {ItemId::Balm, "balm", "Balm", 10, 3, 1, true, true, false, 25}
+    {ItemId::Balm, "balm", "Balm", 10, 3, 1, true, true, false, 25},
+    // Provisional original SKU/prices; no mesh, armor statistics or finished art claim.
+    {ItemId::WardenCoat, "warden_coat", "Warden Coat", 1, 6, 2, true, true, false, 0, true}
 }};
 
 bool CheckedMultiply(std::int64_t quantity, std::int64_t price, std::int64_t& value) noexcept {
@@ -42,6 +44,7 @@ bool HasId(const std::vector<std::uint64_t>& ids, std::uint64_t id) noexcept {
 bool EqualSnapshots(const Snapshot& left, const Snapshot& right) noexcept {
     if (left.Version != right.Version || left.Revision != right.Revision ||
         left.Coins != right.Coins || left.EquippedWeapon != right.EquippedWeapon ||
+        left.EquippedTorso != right.EquippedTorso ||
         left.Quest != right.Quest || left.NextDropId != right.NextDropId ||
         left.QuestKillDropId != right.QuestKillDropId ||
         left.UnprocessedDropIds != right.UnprocessedDropIds) {
@@ -256,6 +259,31 @@ Result ProgressionCore::Unequip() {
     return Commit(std::move(candidate));
 }
 
+Result ProgressionCore::EquipTorso(std::uint32_t inventorySlot) {
+    if (inventorySlot >= InventorySlotCount) return Failure(ResultCode::InvalidSlot);
+    const auto& slot = State.Inventory[inventorySlot];
+    if (slot.Count == 0) return Failure(ResultCode::InsufficientItems);
+    const auto* definition = FindDefinition(slot.Id);
+    if (definition == nullptr || !definition->Torso || definition->Weapon)
+        return Failure(ResultCode::NotTorso);
+    if (slot.Id == State.EquippedTorso) return Failure(ResultCode::AlreadyEquipped);
+    Snapshot candidate = State;
+    // A one-item torso frees its owned slot before returning the old torso.
+    // This does not grant another item or require a separate empty slot.
+    candidate.EquippedTorso = slot.Id;
+    candidate.Inventory[inventorySlot] = State.EquippedTorso == ItemId::None
+        ? ItemStack{} : ItemStack{State.EquippedTorso, 1};
+    return Commit(std::move(candidate));
+}
+
+Result ProgressionCore::UnequipTorso() {
+    if (State.EquippedTorso == ItemId::None) return Failure(ResultCode::NothingEquipped);
+    Snapshot candidate = State;
+    if (!AddItems(candidate, candidate.EquippedTorso, 1)) return Failure(ResultCode::InventoryFull);
+    candidate.EquippedTorso = ItemId::None;
+    return Commit(std::move(candidate));
+}
+
 Result ProgressionCore::AcceptQuest() {
     if (State.Quest == QuestState::Completed) {
         return Failure(ResultCode::QuestAlreadyCompleted);
@@ -433,6 +461,11 @@ Result ProgressionCore::ValidateSnapshot(const Snapshot& candidate) {
         if (equipped == nullptr || !equipped->Weapon) {
             return Invalid(candidate, ValidationCode::InvalidEquippedWeapon);
         }
+    }
+    if (candidate.EquippedTorso != ItemId::None) {
+        const auto* equipped = FindDefinition(candidate.EquippedTorso);
+        if (equipped == nullptr || !equipped->Torso || equipped->Weapon)
+            return Invalid(candidate, ValidationCode::InvalidEquippedTorso);
     }
     if (static_cast<std::uint32_t>(candidate.Quest) >
         static_cast<std::uint32_t>(QuestState::Completed)) {

@@ -15,7 +15,7 @@ bool AJadeboundProgressionActor::MatchesInventoryIntentRevision(int64 ExpectedRe
         Feedback = FText::FromString(TEXT("Your pack changed. Review it before trying again."));
         return false;
     }
-    // Revision tokens are bounded by the v2 save format. Do not cross its ceiling.
+    // Persisted revision tokens retain the signed ceiling across current formats.
     if (State.ExactRevision >= Jadebound::MaximumPersistedCounter)
     {
         Feedback = FText::FromString(TEXT("Character progression has reached its revision limit. Items are preserved."));
@@ -40,6 +40,11 @@ bool AJadeboundProgressionActor::BuyItemAtRevision(int32 Id, int32 Quantity, int
     { Feedback = FText::FromString(TEXT("Balm purchase requires your living, ready hero.")); return false; }
     if (!AuthorityReady() || !MatchesInventoryIntentRevision(ExpectedRevision)) return false;
     if (!IsMerchantInRange()) { Feedback = FText::FromString(TEXT("Move closer to the merchant to buy or sell.")); return false; }
+    // SKU 8 is authored domain data; its complete original outfit is not yet
+    // qualified in Unreal. Client visibility is not an availability gate.
+    const auto* Definition = Jadebound::ProgressionCore::FindDefinition(static_cast<Jadebound::ItemId>(Id));
+    if (Definition && Definition->Torso)
+    { Feedback = FText::FromString(TEXT("This armor is not available yet. No coins were spent.")); return false; }
     if (Id == 2 && !AshwoodSpearMesh) { Feedback = FText::FromString(TEXT("The spear asset is unavailable. No coins were spent.")); return false; }
     return Ok = FinishTransaction(Core->Buy(static_cast<Jadebound::ItemId>(Id), Quantity), FText::FromString(TEXT("Purchased. Coins and items saved.")));
 }

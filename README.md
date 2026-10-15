@@ -1,38 +1,31 @@
-# Jadebound — Unreal source
+# Jadebound - Unreal source
 
 Jadebound is an original PC fantasy MMORPG in development. The intended game combines responsive isometric combat and distinct equipment-focused classes with mythical companions, mounts, gathering, crafting and authored quests.
 
-This repository contains the current Unreal C++ progression plugin and its tests. It is a **source snapshot**, with the playable maps, Blueprint characters, animations and art excluded pending asset provenance review. It is not a downloadable game or a finished MMORPG. The older Godot prototype remains at [vgcman16/jadebound](https://github.com/vgcman16/jadebound).
+This repository is a **source host**, containing the progression plugin, configuration and tests. Playable maps, Blueprint characters, animations and art remain excluded pending asset provenance review. It is not a downloadable game or a finished MMORPG. The older Godot prototype remains at [vgcman16/jadebound](https://github.com/vgcman16/jadebound).
 
-## Current implementation
+## Current source
 
-- Twelve-slot inventory, seven item definitions, stack limits, priced buying/selling, weapon equip/unequip and loot bookkeeping.
-- Merchant and inventory tooltips prefer their own panel's top edge. Pack details wrap completely and keep Split on a separate row. Local 1280×720 gameplay shows a full selected Ore card and readable disabled-Split help clearing the hero; broader layouts and finished interface art remain under review.
-- One tracked quest with guarded rewards, revision-checked transactions and automatic journal persistence.
-- Supported V2 builds refuse newer V3 save entries before loading retained history, including empty files and directory collisions. V3 migration and torso equipment are still unfinished.
-- Original weapon presentation hooks and a preserved standalone merchant/combat prototype locally.
-- An opt-in loopback server foundation for two to four profiles, owner-specific progression models, validated requests and retained save writers.
-- Same-server-session resume tickets that retain a character across disconnects. Native transport/gameplay reconnect qualification remains pending.
-- Server-owned 100–0 health, telegraphed courtyard strikes, replicated life presentation hooks, and a ten-second manual revive in the opt-in development combat slice. Rendered client gameplay remains pending.
-- Validated incoming hits use a server-world damage sequence, preserving replay protection when the registered raider is replaced. Dead-state action admission reads committed server life.
-- Native healing balm pairs server health with one owned-item consumption. Held-save retries preserve subsequent damage or revive state; health across server restart remains unfinished.
+- Twelve inventory slots, stack limits, merchant prices, weapon equip/unequip and owned loot. Seven established item definitions are joined by a provisional torso SKU whose ordinary purchase remains gated until its asset is qualified.
+- One tracked quest, protected one-time rewards, revision-checked transactions and automatic V3 progression journals. Frozen V1/V2 decoding and explicit migration retain the old banks; canonical newer-format entries refuse unsafe fallback.
+- Visible weapon presentation and optional original-character movement/animation integration code. Complete visible armor and accepted original characters remain unfinished; the required assets are not included.
+- Project input configuration removes inherited F1-F5/F9 debug commands that conflict with gameplay function keys. The existing published tooltip layout remains unchanged.
+- An opt-in loopback authority foundation with owner-specific progression, server-owned health, telegraphed strikes, delayed manual revive and native healing rules. Independent-client multiplayer, durable account identity and production online operations remain unqualified.
 
-Local standalone full-inventory refusals, useful owned healing, retained loot recovery, matching-stack purchases and saved-character reopening have passed a targeted gameplay continuation. These checks do not qualify multiplayer transport or the full release.
-
-Armor swapping, complete class skill sets, gathering/crafting, companions, mounts, dungeons, the main quest ending and production online infrastructure remain unfinished. The art direction is still under review.
+The private Windows Development package has passed a fresh quest/combat/loot sequence, natural death and delayed manual revive, merchant transactions, visible weapon changes and a separate cold reopening. Earlier editor-standalone testing also covered earned full inventories and retained-drop recovery. Those results apply to the private tested build. This public export separately passed five portable suites, an independent UE 5.8 editor-module compile and four memory-only V3 codec tests. These source checks do not run the excluded game. See [validation](docs/VALIDATION.md).
 
 ## Build the source
 
-Use Unreal Engine 5.8 and a compatible Windows C++ toolchain. Open `JadeboundCombatLab.uproject` to build the plugin, or copy `Plugins/JadeboundProgression` into an existing UE 5.8 project. No engine source, binary content or paid asset pack is bundled.
+Use Unreal Engine 5.8 with a compatible Windows C++ toolchain. Open `JadeboundCombatLab.uproject` to build the plugin, or copy `Plugins/JadeboundProgression` into an existing UE 5.8 project. No engine source, binary content or paid asset pack is bundled. The host alone cannot reproduce the tested game without the separately reviewed maps and assets.
 
-The supplied project is a source host. Gameplay requires the separately reviewed maps and assets referenced by the plugin. Native fixture tests also require those assets and isolated test-user directories; do not run persistence fixtures against a real character profile. The local development foundation stays disabled by default and is unavailable in Shipping.
-
-The independent portable C++17 tests need no Unreal installation:
+Portable C++17 tests require no Unreal installation. Use a fresh build directory:
 
 ```sh
-cmake -S . -B build
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+cmake -S . -B build/public-v3
+cmake --build build/public-v3 --config Release
+ctest --test-dir build/public-v3 -C Release --output-on-failure
 ```
 
-See [validation results](docs/VALIDATION.md), [native player life](Plugins/JadeboundProgression/Docs/NativePlayerLife.md), [healing consumables](Plugins/JadeboundProgression/Docs/NativeConsumables.md), [enemy damage issuance](Plugins/JadeboundProgression/Docs/NativeStrikeIssuance.md), [local development resume](Plugins/JadeboundProgression/Docs/LocalDevelopmentResume.md), [roadmap](docs/ROADMAP.md), and [publication scope](docs/PUBLICATION.md). A public repository does not by itself grant an open-source license; no additional redistribution license has been selected.
+Native fixtures require their explicit opt-in flags, excluded gameplay assets where applicable, and fresh isolated test-user directories. Never run them against a real character. The local development foundation stays disabled by default and is unavailable in Shipping. Public capture writes only beneath the project's Saved directory; that adjusted path still needs independent runtime qualification.
+
+See [native player life](Plugins/JadeboundProgression/Docs/NativePlayerLife.md), [healing](Plugins/JadeboundProgression/Docs/NativeConsumables.md), [damage issuance](Plugins/JadeboundProgression/Docs/NativeStrikeIssuance.md), [development resume](Plugins/JadeboundProgression/Docs/LocalDevelopmentResume.md), [roadmap](docs/ROADMAP.md) and [publication scope](docs/PUBLICATION.md). No additional open-source or redistribution license has been selected.

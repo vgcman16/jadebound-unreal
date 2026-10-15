@@ -1,15 +1,14 @@
 #pragma once
 
-#include "ProgressionCore.h"
-#include "LegacyCore/ProgressionCore.h"
+#include "Domain/LegacyCore/ProgressionCore.h"
+#include "Domain/LegacyCoreV2/ProgressionCore.h"
 
-namespace Jadebound {
-
-// Pure conversion only. Validate the exact namespaced v1 contract, retain its
-// revision and owned state, then validate v2 before assigning output. Failure
-// leaves output unchanged. This performs no journal write or gameplay commit.
-// The actor must durably commit and read back v2 at a strictly higher revision
-// before exposing the converted model as writable; that integration is pending.
-Result ConvertLegacyV1Snapshot(const JadeboundLegacyV1::Snapshot& legacy, Snapshot& output);
-
-} // namespace Jadebound
+namespace Jadebound
+{
+// Historical V1-to-V2 API only: frozen types make its contract independent of
+// the current V3 domain. Pure conversion retains revision and owned state.
+// Validation/refusal/output preservation are delegated to exact Source146.
+// Current V3 callers use their separate Source145 bridge; no implicit V3 output.
+JadeboundLegacyV2::Result ConvertLegacyV1Snapshot(
+    const JadeboundLegacyV1::Snapshot& Source, JadeboundLegacyV2::Snapshot& Out);
+}

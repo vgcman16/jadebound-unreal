@@ -2,7 +2,8 @@
 
 #if WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS
 #include "Domain/ProgressionCore.h"
-#include "Persistence/ProgressionSaveV2.h"
+#include "Persistence/ProgressionSaveV3.h"
+#include "Persistence/JournalNamespacePaths.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/StaticMesh.h"
@@ -23,6 +24,8 @@
 
 namespace JadeboundStandaloneWriter
 {
+inline constexpr int32 JournalPathCount = 8; // V1, current V3, retained V2, forward V4.
+static_assert(Jadebound::SnapshotVersion == 3, "Current standalone fixture requires V3");
 struct FImage
 {
     Jadebound::Snapshot Core;
@@ -34,14 +37,16 @@ struct FImage
     const APawn* Hero = nullptr;
     const APlayerController* Player = nullptr;
     const AActor* Owner = nullptr;
-    FString SaveId, CommittedId, CandidateId, FailureMessage, Feedback;
+    FString SaveId, CommittedId, CandidateId, FailureMessage, Feedback, WirePath;
+    TArray<uint8> WireBytes;
+    int32 WireSlot = INDEX_NONE;
     TArray<FJadeboundSavedDrop> Pending, CommittedDrops, CandidateDrops;
     int32 Slot = -1, Opens = 0, SuccessfulOpens = 0;
     double Deadline = 0.0;
     uint8 RetryStep = 0;
     EJadeboundPersistenceFailureKind Failure = EJadeboundPersistenceFailureKind::None;
     bool bReady = false, bInitialized = false, bBlocked = false, bUnsaved = false;
-    bool bEnding = false, bDevelopment = false;
+    bool bEnding = false, bDevelopment = false, bAdmitted = false;
 };
 }
 
@@ -74,6 +79,8 @@ struct FJadeboundStandaloneWriterTestAccess
         Out.bReady = Model.bReady; Out.bInitialized = Model.bServerModelInitialized;
         Out.bBlocked = Model.bPersistenceBlocked; Out.bUnsaved = Model.bUnsavedCandidate;
         Out.bEnding = Model.bPersistenceEndingPlay; Out.bDevelopment = Model.bDevelopmentModel;
+        Out.bAdmitted = Model.bV3JournalAdmitted; Out.WireBytes = Model.HeldJournalBytes;
+        Out.WirePath = Model.HeldJournalPath; Out.WireSlot = Model.HeldJournalSlot;
         return true;
     }
     static void SetOpener(AJadeboundProgressionActor& Model, TFunction<IFileHandle*(const FString&)> Opener)
@@ -108,7 +115,7 @@ using Access = FJadeboundStandaloneWriterTestAccess;
 bool SameCore(const Jadebound::Snapshot& A, const Jadebound::Snapshot& B)
 {
     if (A.Version != B.Version || A.Revision != B.Revision || A.Coins != B.Coins || A.Quest != B.Quest ||
-        A.EquippedWeapon != B.EquippedWeapon || A.NextDropId != B.NextDropId || A.QuestKillDropId != B.QuestKillDropId ||
+        A.EquippedWeapon != B.EquippedWeapon || A.EquippedTorso != B.EquippedTorso || A.NextDropId != B.NextDropId || A.QuestKillDropId != B.QuestKillDropId ||
         A.UnprocessedDropIds != B.UnprocessedDropIds) return false;
     for (uint32 I = 0; I < Jadebound::InventorySlotCount; ++I)
         if (A.Inventory[I].Id != B.Inventory[I].Id || A.Inventory[I].Count != B.Inventory[I].Count) return false;
@@ -137,21 +144,21 @@ bool SameImage(const FImage& A, const FImage& B)
         A.Slot == B.Slot && A.Opens == B.Opens && A.SuccessfulOpens == B.SuccessfulOpens &&
         A.Deadline == B.Deadline && A.RetryStep == B.RetryStep && A.Failure == B.Failure &&
         A.bReady == B.bReady && A.bInitialized == B.bInitialized && A.bBlocked == B.bBlocked &&
-        A.bUnsaved == B.bUnsaved && A.bEnding == B.bEnding && A.bDevelopment == B.bDevelopment;
+        A.bUnsaved == B.bUnsaved && A.bEnding == B.bEnding && A.bDevelopment == B.bDevelopment &&
+        A.bAdmitted == B.bAdmitted && A.WireBytes == B.WireBytes && A.WirePath == B.WirePath && A.WireSlot == B.WireSlot;
 }
 
 struct FBank { bool bExists = false; TArray<uint8> Bytes; };
-struct FBanks { FBank Bank[4]; };
+struct FBanks { FBank Bank[JournalPathCount]; };
 bool SameBank(const FBank& A, const FBank& B) { return A.bExists == B.bExists && A.Bytes == B.Bytes; }
 bool SameBanks(const FBanks& A, const FBanks& B)
 {
-    for (int32 I = 0; I < 4; ++I) if (!SameBank(A.Bank[I], B.Bank[I])) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I) if (!SameBank(A.Bank[I], B.Bank[I])) return false;
     return true;
 }
 bool OwnedUser(FString& User)
 {
-    const bool bForwardGuard = FParse::Param(FCommandLine::Get(), TEXT("JadeboundGuardedV2AdmissionTests"));
-    if ((!bForwardGuard && !FParse::Param(FCommandLine::Get(), TEXT("JadeboundStandaloneWriterTests"))) ||
+    if (!FParse::Param(FCommandLine::Get(), TEXT("JadeboundV3StandaloneWriterTests")) ||
         !FParse::Value(FCommandLine::Get(), TEXT("UserDir="), User) || User.IsEmpty() || FPaths::IsRelative(User)) return false;
     User.ReplaceInline(TEXT("\\"), TEXT("/"));
     TArray<FString> Parts; User.ParseIntoArray(Parts, TEXT("/"), true);
@@ -159,7 +166,7 @@ bool OwnedUser(FString& User)
     FPaths::NormalizeDirectoryName(User);
     FString Effective = FPaths::ProjectUserDir(); FPaths::NormalizeDirectoryName(Effective);
     const FString Parent = FPaths::GetCleanFilename(FPaths::GetPath(User));
-    const FString Prefix(bForwardGuard ? TEXT("Jadebound-S118-A") : TEXT("Jadebound-P102-A"));
+    const FString Prefix(TEXT("Jadebound-S157-A"));
     const FString Attempt = Parent.Mid(Prefix.Len());
     if (!Parent.StartsWith(Prefix, ESearchCase::CaseSensitive) || Attempt.Len() != 3 || Attempt == TEXT("000")) return false;
     for (TCHAR Ch : Attempt) if (Ch < TEXT('0') || Ch > TEXT('9')) return false;
@@ -175,6 +182,31 @@ struct FEntry
     int32 Opens = 0, SuccessfulOpens = 0;
     FString LastOpenedPath;
     bool bFailOpen = false, bForeign = false;
+    TArray<uint8> LastAttemptBytes, LastWrittenBytes;
+    FString LastAttemptPath;
+    int32 LastAttemptSlot = INDEX_NONE;
+};
+
+// Observe the real single WriteAndFlush buffer; all OS calls remain delegated.
+class FRecordedJournalHandle final : public IFileHandle
+{
+    TUniquePtr<IFileHandle> Inner;
+    TArray<uint8>& Written;
+public:
+    FRecordedJournalHandle(IFileHandle* Handle, TArray<uint8>& Buffer) : Inner(Handle), Written(Buffer) {}
+    int64 Tell() override { return Inner->Tell(); }
+    bool Seek(int64 Position) override { return Inner->Seek(Position); }
+    bool SeekFromEnd(int64 Position = 0) override { return Inner->SeekFromEnd(Position); }
+    bool Read(uint8* Out, int64 Count) override { return Inner->Read(Out, Count); }
+    bool ReadAt(uint8* Out, int64 Count, int64 Offset) override { return Inner->ReadAt(Out, Count, Offset); }
+    bool Truncate(int64 Size) override { return Inner->Truncate(Size); }
+    bool Write(const uint8* Data, int64 Count) override
+    {
+        if (!Data || Count <= 0 || Count > 1024 * 1024 + 32) return false;
+        Written.Reset(); Written.Append(Data, static_cast<int32>(Count));
+        return Inner->Write(Data, Count);
+    }
+    bool Flush(const bool bFull = false) override { return Inner->Flush(bFull); }
 };
 
 struct FScope
@@ -186,7 +218,7 @@ struct FScope
     TStrongObjectPtr<UClass> HeroClass;
     TStrongObjectPtr<UStaticMesh> Glaive, Spear;
     TArray<TUniquePtr<FEntry>> Entries;
-    FString Paths[4], Companion;
+    FString Paths[JournalPathCount], Companion;
     bool bValid = false;
 
     explicit FScope(FAutomationTestBase& InTest) : Test(InTest)
@@ -194,16 +226,23 @@ struct FScope
         FString User;
         if (!IsInGameThread() || !GEngine || !GEngine->WorldSettingsClass || !OwnedUser(User))
         { Test.AddError(TEXT("Game thread/engine and strict fresh standalone opt-in UserDir required; real profiles untouched.")); return; }
-        for (int32 I = 0; I < 4; ++I)
-            if (!Jadebound::Persistence::TryJournalPath(false, TEXT("Traveler01"), I % 2, I >= 2, Paths[I]) ||
-                !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Paths[I]), User))
-            { Test.AddError(TEXT("All fixed Traveler01 journal paths must be under the owned effective UserDir.")); return; }
+        Jadebound::Persistence::JournalNamespacePaths Namespaces;
+        if (!Jadebound::Persistence::BuildJournalNamespacePaths(false, TEXT("Traveler01"), Namespaces))
+        { Test.AddError(TEXT("Exact standalone V1/V2/V3/V4 path authority required.")); return; }
+        for (int32 Slot = 0; Slot < 2; ++Slot)
+        {
+            Paths[Slot] = Namespaces.Banks[0][Slot]; Paths[2 + Slot] = Namespaces.Banks[2][Slot];
+            Paths[4 + Slot] = Namespaces.Banks[1][Slot]; Paths[6 + Slot] = Namespaces.ForwardV4[Slot];
+        }
+        for (const FString& Path : Paths)
+            if (!FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Path), User))
+            { Test.AddError(TEXT("All eight fixed Traveler01 journal paths must be under the owned effective UserDir.")); return; }
         Companion = FPaths::Combine(FPaths::GetPath(Paths[2]), TEXT("Jadebound_Traveler01_Progression.writer"));
         IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-        if (!FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Companion), User) || Files.FileExists(*Companion))
+        if (!FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Companion), User) || Jadebound::Persistence::HasJournalEntry(Files, Companion))
         { Test.AddError(TEXT("Fresh absent owned companion required; no reset/reuse.")); return; }
         for (const FString& Path : Paths)
-            if (Files.FileExists(*Path)) { Test.AddError(TEXT("All four journals must initially be absent; no reset/reuse.")); return; }
+            if (Jadebound::Persistence::HasJournalEntry(Files, Path)) { Test.AddError(TEXT("All eight journals must initially be absent; no reset/reuse.")); return; }
         HeroClass.Reset(LoadClass<ACharacter>(nullptr, TEXT("/Game/Jadebound/Tests/GlaiveCombatV006/BP_GlaiveHero_V006.BP_GlaiveHero_V006_C")));
         Glaive.Reset(LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Jadebound/OriginalWeapons/JadeGlaiveV001/SM_JadeGlaive_CM_V001.SM_JadeGlaive_CM_V001")));
         Spear.Reset(LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Jadebound/OriginalWeapons/AshwoodSpearV001/SM_AshwoodSpear_CM_V001.SM_AshwoodSpear_CM_V001")));
@@ -256,10 +295,16 @@ struct FScope
         {
             if (Path != Paths[2] && Path != Paths[3]) { Out->bForeign = true; return nullptr; }
             ++Out->Opens; Out->LastOpenedPath = Path;
+            FImage Attempt;
+            if (!Access::Capture(*Out->Model, Attempt) || !Attempt.bAdmitted || Attempt.WireBytes.IsEmpty() ||
+                Attempt.WirePath != Path || Attempt.WireSlot != 1 - Attempt.Slot)
+            { Out->bForeign = true; return nullptr; }
+            Out->LastAttemptBytes = Attempt.WireBytes; Out->LastAttemptPath = Attempt.WirePath;
+            Out->LastAttemptSlot = Attempt.WireSlot; Out->LastWrittenBytes.Reset();
             if (Out->bFailOpen) return nullptr;
             IFileHandle* Handle = FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*Path, false, false);
             if (Handle) ++Out->SuccessfulOpens;
-            return Handle;
+            return Handle ? new FRecordedJournalHandle(Handle, Out->LastWrittenBytes) : nullptr;
         });
         if (bBeginModel) Out->Model->DispatchBeginPlay(); // Production acquisition BEFORE ReadSave.
         if (!Live(*Out) || (bBeginModel && !Out->Model->HasActorBegunPlay())) return nullptr;
@@ -273,13 +318,18 @@ struct FScope
     }
     bool Unchanged(const FEntry& Entry, const FImage& Before) const
     { FImage After; return Capture(Entry, After) && SameImage(Before, After); }
-    bool Banks(FBanks& Out) const
+    // Retained-only mode is used solely by the explicit physical V4 guard;
+    // it separately inspects both V4 entries and their sentinel contents.
+    bool Banks(FBanks& Out, bool bRetainedOnly = false) const
     {
+        Out = FBanks{};
         IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-        for (int32 I = 0; I < 4; ++I)
+        const int32 Count = bRetainedOnly ? 6 : JournalPathCount;
+        for (int32 I = 0; I < Count; ++I)
         {
-            auto& Bank = Out.Bank[I]; Bank.bExists = Files.FileExists(*Paths[I]); Bank.Bytes.Reset();
+            auto& Bank = Out.Bank[I]; Bank.bExists = Jadebound::Persistence::HasJournalEntry(Files, Paths[I]); Bank.Bytes.Reset();
             if (!Bank.bExists) continue;
+            if (!Files.FileExists(*Paths[I]) || Files.DirectoryExists(*Paths[I])) return false;
             const int64 Size = Files.FileSize(*Paths[I]);
             if (Size <= 0 || Size > 1024 * 1024 + 32) return false;
             TUniquePtr<IFileHandle> File(Files.OpenRead(*Paths[I]));
@@ -287,22 +337,24 @@ struct FScope
             Bank.Bytes.SetNumUninitialized(static_cast<int32>(Size));
             if (!File->Read(Bank.Bytes.GetData(), Size)) return false;
         }
-        return !Out.Bank[0].bExists && !Out.Bank[1].bExists; // Legacy namespaces never created/rewritten.
+        return !Out.Bank[0].bExists && !Out.Bank[1].bExists && !Out.Bank[4].bExists && !Out.Bank[5].bExists &&
+            !Out.Bank[6].bExists && !Out.Bank[7].bExists; // Fresh V3 never creates old/future banks.
     }
-    bool BanksUnchanged(const FBanks& Before) const
-    { FBanks After; return Banks(After) && SameBanks(Before, After); }
+    bool BanksUnchanged(const FBanks& Before, bool bRetainedOnly = false) const
+    { FBanks After; return Banks(After, bRetainedOnly) && SameBanks(Before, After); }
     bool CleanState(const FEntry& Entry, const Jadebound::Snapshot& Expected, int32 Slot) const
     {
         FImage Image; FJadeboundProgressionState Encoded; Jadebound::Snapshot Decoded;
         return Capture(Entry, Image) && Entry.Model->HasActorBegunPlay() && Entry.Model->IsMerchantInRange() &&
             Entry.Model->IsProgressionReady() && Image.bReady && Image.bInitialized && !Image.bBlocked && !Image.bUnsaved &&
             !Image.bEnding && !Image.bDevelopment && Image.Lease && !Image.DevelopmentLease && Image.Saved && !Image.Held &&
+            Image.bAdmitted && Image.WireBytes.IsEmpty() && Image.WirePath.IsEmpty() && Image.WireSlot == INDEX_NONE &&
             Image.Failure == EJadeboundPersistenceFailureKind::None && Image.Deadline == 0.0 && Image.RetryStep == 0 &&
             Image.SaveId == TEXT("Traveler01") && Image.CommittedId == TEXT("Traveler01") && Image.Slot == Slot &&
             Image.Player == Entry.PC.Get() && Image.Hero == Entry.Hero.Get() && Image.Owner == Entry.PC.Get() &&
             Image.Pending.IsEmpty() && Image.CommittedDrops.IsEmpty() && SameCore(Image.Core, Expected) &&
-            Jadebound::Persistence::EncodeStateV2(Expected, Encoded) && SameState(Encoded, Image.Reflected) &&
-            SameState(Encoded, Image.Committed) && Jadebound::Persistence::DecodeStateV2(Image.Committed, Decoded) &&
+            Jadebound::Persistence::EncodeStateV3(Expected, Encoded) && SameState(Encoded, Image.Reflected) &&
+            SameState(Encoded, Image.Committed) && Jadebound::Persistence::DecodeStateV3(Image.Committed, Decoded) &&
             SameCore(Decoded, Expected);
     }
     bool Rejected(const FEntry& Entry) const
@@ -311,10 +363,11 @@ struct FScope
         return Capture(Entry, Image) && Entry.Model->HasActorBegunPlay() && !Entry.Model->IsProgressionReady() &&
             !Image.bReady && !Image.bInitialized && Image.bBlocked && !Image.bUnsaved && !Image.bEnding &&
             !Image.bDevelopment && !Image.Lease && !Image.DevelopmentLease && !Image.Saved && !Image.Held &&
+            !Image.bAdmitted && Image.WireBytes.IsEmpty() && Image.WirePath.IsEmpty() && Image.WireSlot == INDEX_NONE &&
             Image.Failure == EJadeboundPersistenceFailureKind::RecoveryRequired && Image.Deadline == 0.0 && Image.RetryStep == 0 &&
             Image.SaveId == TEXT("Traveler01") && Image.Pending.IsEmpty() && Entry.Opens == 0 && Entry.SuccessfulOpens == 0 &&
             Image.Player == Entry.PC.Get() && Image.Hero == Entry.Hero.Get() && Image.Owner == Entry.PC.Get() &&
-            SameCore(Image.Core, Jadebound::Snapshot{}) && Jadebound::Persistence::EncodeStateV2(Jadebound::Snapshot{}, Initial) &&
+            SameCore(Image.Core, Jadebound::Snapshot{}) && Jadebound::Persistence::EncodeStateV3(Jadebound::Snapshot{}, Initial) &&
             SameState(Image.Reflected, Initial);
     }
     bool DestroyModel(FEntry& Entry)
@@ -378,7 +431,7 @@ bool BuyAndAdvance(FAutomationTestBase& Test, FScope& Scope, FEntry& Entry, Jade
         After.Lease == Before.Lease && After.Opens == Before.Opens + 1 && After.SuccessfulOpens == Before.SuccessfulOpens + 1 &&
         After.Saved != Before.Saved && Slot == 1 - Before.Slot && Entry.LastOpenedPath == Scope.Paths[2 + Slot] &&
         !SameBank(BanksAfter.Bank[2 + Slot], BanksBefore.Bank[2 + Slot]))) return false;
-    for (int32 I = 0; I < 4; ++I)
+    for (int32 I = 0; I < JournalPathCount; ++I)
         if (I != 2 + Slot && !Test.TestTrue(TEXT("Purchase preserves every other namespace/bank byte"), SameBank(BanksBefore.Bank[I], BanksAfter.Bank[I]))) return false;
     return true;
 }
@@ -397,12 +450,14 @@ bool FJadeboundStandaloneWriterLifecycleTest::RunTest(const FString&)
     using namespace JadeboundStandaloneWriter;
     FScope Scope(*this); if (!Scope.bValid) return false;
     const Jadebound::Snapshot Initial;
+    auto TorsoOnly = Initial; TorsoOnly.EquippedTorso = Jadebound::ItemId::WardenCoat;
+    if (!TestFalse(TEXT("Whole-core comparison detects a torso-only current state difference"), SameCore(Initial, TorsoOnly))) return false;
     auto R1 = Initial; R1.Revision = 1; R1.Coins = 8; R1.Inventory[0] = {Jadebound::ItemId::Moonleaf, 1};
     auto R2 = R1; R2.Revision = 2; R2.Coins = 5; R2.Inventory[1] = {Jadebound::ItemId::IronOre, 1};
     auto R3 = R2; R3.Revision = 3; R3.Coins = 3; R3.Inventory[0].Count = 2;
 
     FEntry* A = Scope.Create(); FBanks InitialBanks;
-    if (!TestTrue(TEXT("A admits through production BeginPlay: r0/10 coins/empty bag/Glaive/quest0/drop1, exactly fresh V2 A"),
+    if (!TestTrue(TEXT("A admits through production BeginPlay: r0/10 coins/empty bag/Glaive/quest0/drop1, exactly fresh V3 A"),
         A && Scope.CleanState(*A, Initial, 0) && A->Opens == 1 && A->SuccessfulOpens == 1 &&
         Scope.Banks(InitialBanks) && InitialBanks.Bank[2].bExists && !InitialBanks.Bank[3].bExists &&
         FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.Companion) &&
@@ -444,7 +499,7 @@ bool FJadeboundStandaloneWriterLifecycleTest::RunTest(const FString&)
     if (!D || !Reopened(*this, Scope, *D, R2, 0, R2Banks)) return false;
 
     FImage BeforeFailure, Held; FJadeboundProgressionState EncodedR3;
-    if (!Scope.Capture(*D, BeforeFailure) || !Jadebound::Persistence::EncodeStateV2(R3, EncodedR3)) return false;
+    if (!Scope.Capture(*D, BeforeFailure) || !Jadebound::Persistence::EncodeStateV3(R3, EncodedR3)) return false;
     D->bFailOpen = true;
     const bool SavedPurchase = D->Model->BuyItemAtRevision(static_cast<int32>(Jadebound::ItemId::Moonleaf), 1, 2);
     if (!TestTrue(TEXT("Real bank-open failure holds one r3 and its original lease under a controlled future fixture deadline; committed r2 and disk survive"),
@@ -452,6 +507,9 @@ bool FJadeboundStandaloneWriterLifecycleTest::RunTest(const FString&)
         Scope.Capture(*D, Held) && SameCore(Held.Core, R3) && SameState(Held.Reflected, EncodedR3) &&
         Held.Lease == BeforeFailure.Lease && Held.Lease && !Held.DevelopmentLease && Held.Held &&
         Held.CandidateId == TEXT("Traveler01") && SameState(Held.Candidate, EncodedR3) && Held.CandidateDrops.IsEmpty() &&
+        Held.bAdmitted && !Held.WireBytes.IsEmpty() && Held.WirePath == Scope.Paths[3] && Held.WireSlot == 1 &&
+        D->LastAttemptBytes == Held.WireBytes && D->LastAttemptPath == Held.WirePath &&
+        D->LastAttemptSlot == Held.WireSlot && D->LastWrittenBytes.IsEmpty() &&
         Held.Saved == BeforeFailure.Saved && Held.CommittedId == BeforeFailure.CommittedId &&
         SameState(Held.Committed, BeforeFailure.Committed) && SameDrops(Held.CommittedDrops, BeforeFailure.CommittedDrops) &&
         SameDrops(Held.Pending, BeforeFailure.Pending) && Held.Slot == BeforeFailure.Slot &&
@@ -475,8 +533,12 @@ bool FJadeboundStandaloneWriterLifecycleTest::RunTest(const FString&)
         SameState(AfterRetry.Committed, Held.Candidate) && AfterRetry.CommittedId == Held.CandidateId &&
         SameDrops(AfterRetry.CommittedDrops, Held.CandidateDrops) && AfterRetry.Opens == Held.Opens + 1 &&
         AfterRetry.SuccessfulOpens == Held.SuccessfulOpens + 1 && D->LastOpenedPath == Scope.Paths[3] &&
+        D->LastAttemptBytes == Held.WireBytes && D->LastAttemptPath == Held.WirePath && D->LastAttemptSlot == Held.WireSlot &&
+        D->LastWrittenBytes == Held.WireBytes && R3Banks.Bank[3].Bytes == Held.WireBytes &&
         !SameBank(R3Banks.Bank[3], R2Banks.Bank[3]) && SameBank(R3Banks.Bank[2], R2Banks.Bank[2]) &&
         SameBank(R3Banks.Bank[0], R2Banks.Bank[0]) && SameBank(R3Banks.Bank[1], R2Banks.Bank[1]))) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I)
+        if (I != 3 && !TestTrue(TEXT("Held retry preserves every other retained/future namespace entry"), SameBank(R3Banks.Bank[I], R2Banks.Bank[I]))) return false;
     if (!TestTrue(TEXT("A repeated held retry is a complete no-op after verified commit"),
         !Access::Retry(*D->Model) && Scope.Unchanged(*D, AfterRetry) && Scope.BanksUnchanged(R3Banks)) ||
         !RefuseActions(*this, Scope, *E, *D)) return false;
@@ -489,6 +551,76 @@ bool FJadeboundStandaloneWriterLifecycleTest::RunTest(const FString&)
     AddInfo(TEXT("Production standalone lifecycle, real Windows sharing, exact retained bank bytes and controlled fixture-clock retry guard/ownership only; no viewport/input, independent client, network, gameplay or elapsed production-backoff measurement."));
     return true;
 }
-#include "Tests/JadeboundGuardedV2StandaloneTests.inl"
+// Historical guarded V2 registration intentionally remains in the preserved old build only.
+
+// Separately authored current V3 startup guard. This is not the old V2 rollback test.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJadeboundV3StandaloneForwardStartupTest,
+    "Jadebound.Persistence.V3StandaloneForwardStartup", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FJadeboundV3StandaloneForwardStartupTest::RunTest(const FString&)
+{
+    using namespace JadeboundStandaloneWriter;
+    if (!FParse::Param(FCommandLine::Get(), TEXT("JadeboundV3StandaloneWriterTests")))
+    { AddError(TEXT("Explicit Source157 current V3 opt-in and a fresh UserDir are required.")); return false; }
+    FScope Scope(*this);
+    if (!Scope.bValid) return false;
+    FEntry* Original = Scope.Create();
+    if (!Original || !Scope.CleanState(*Original, Jadebound::Snapshot{}, 0)) return false;
+    auto Expected = Jadebound::Snapshot{};
+    Expected.Revision = 1; Expected.Coins = 8; Expected.Inventory[0] = {Jadebound::ItemId::Moonleaf, 1};
+    if (!BuyAndAdvance(*this, Scope, *Original, Jadebound::ItemId::Moonleaf, 0, Expected, 1)) return false;
+    FBanks Before;
+    if (!Scope.Banks(Before) || !Scope.DestroyModel(*Original) || !Scope.CompanionReleased()) return false;
+    const FString V4[2] = {Scope.Paths[6], Scope.Paths[7]};
+    for (const FString& Path : V4)
+        if (!FPaths::IsSamePath(FPaths::GetPath(Path), FPaths::GetPath(Scope.Paths[2]))) return false;
+    IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
+    if (Files.FileExists(*V4[0]) || Files.DirectoryExists(*V4[0]) ||
+        Files.FileExists(*V4[1]) || Files.DirectoryExists(*V4[1]) || !Files.CreateDirectory(*V4[0])) return false;
+    const FString SentinelPath = FPaths::Combine(V4[0], TEXT("keep-evidence.bin"));
+    const TArray<uint8> Sentinel = {0x53, 0x31, 0x31, 0x38, 0x4b, 0x45, 0x45, 0x50};
+    {
+        TUniquePtr<IFileHandle> Handle(Files.OpenWrite(*SentinelPath, false, false));
+        if (!Handle || !Handle->Write(Sentinel.GetData(), Sentinel.Num()) || !Handle->Flush(true)) return false;
+    }
+    {
+        TUniquePtr<IFileHandle> Handle(Files.OpenWrite(*V4[1], false, false));
+        if (!Handle || !Handle->Flush(true)) return false;
+    }
+    const auto ForwardUnchanged = [&]() -> bool
+    {
+        if (!Files.DirectoryExists(*V4[0]) || Files.FileExists(*V4[0]) ||
+            !Files.FileExists(*V4[1]) || Files.DirectoryExists(*V4[1]) || Files.FileSize(*V4[1]) != 0 ||
+            Files.FileSize(*SentinelPath) != Sentinel.Num()) return false;
+        TUniquePtr<IFileHandle> Reader(Files.OpenRead(*SentinelPath));
+        TArray<uint8> Bytes; Bytes.SetNumUninitialized(Sentinel.Num());
+        return Reader && Reader->Read(Bytes.GetData(), Bytes.Num()) && Bytes == Sentinel && Scope.BanksUnchanged(Before, true);
+    };
+    for (int32 Reopen = 0; Reopen < 2; ++Reopen)
+    {
+        FEntry* Guarded = Scope.Create(); // Production BeginPlay acquires then calls guarded ReadSave.
+        FImage Image;
+        if (!Guarded || !Scope.Capture(*Guarded, Image) ||
+            !TestTrue(TEXT("Production BeginPlay refuses with original lease retained and no current V3 state adoption"),
+                Guarded->Model->HasActorBegunPlay() && !Guarded->Model->IsProgressionReady() &&
+                !Image.bReady && !Image.bInitialized && Image.bBlocked && !Image.bUnsaved &&
+                Image.Failure == EJadeboundPersistenceFailureKind::RecoveryRequired &&
+                Image.Lease && !Image.DevelopmentLease && !Image.Saved && !Image.Held &&
+                !Image.bAdmitted && Image.WireBytes.IsEmpty() && Image.WirePath.IsEmpty() && Image.WireSlot == INDEX_NONE &&
+                SameCore(Image.Core, Jadebound::Snapshot{}) && Guarded->Opens == 0 && ForwardUnchanged())) return false;
+        FEntry* Competing = Scope.Create();
+        if (!Competing || !TestTrue(TEXT("Second production startup still excluded by real writer ownership"),
+            Scope.Rejected(*Competing) && Scope.Unchanged(*Guarded, Image) && ForwardUnchanged())) return false;
+        TestFalse(TEXT("Guarded actor cannot purchase from retained V3 history"), Guarded->Model->BuyItemAtRevision(3, 1, 0));
+        TestFalse(TEXT("Guarded actor cannot write a manual replacement"), Guarded->Model->SaveProgress());
+        TestFalse(TEXT("Guarded actor cannot reload retained V3 banks"), Guarded->Model->ReloadProgress());
+        if (!TestTrue(TEXT("Refusals preserve unready model, retained V3 bytes and both forward entries"),
+            Scope.Unchanged(*Guarded, Image) && ForwardUnchanged())) return false;
+        if (!TestTrue(TEXT("Actual EndPlay releases only owned lease; repeated startup still refuses"),
+            Scope.DestroyModel(*Guarded) && Scope.CompanionReleased() && ForwardUnchanged())) return false;
+    }
+    AddInfo(TEXT("Viewportless production BeginPlay/EndPlay, V006 pawn, current V3 refusing physical V4 directory/zero-file, preserved V1/V2/V3 entries and Windows sharing. This is not old V2 rollback, a process cold restart, physical V4 decoding, gameplay or MMO proof."));
+    return true;
+}
+
 
 #endif // WITH_DEV_AUTOMATION_TESTS && PLATFORM_WINDOWS

@@ -13,8 +13,8 @@ using namespace JadeboundMerchantBulkSale;
 Jadebound::Snapshot InitialState()
 {
     Jadebound::Snapshot State;
-    State.Version = 2; State.Revision = 0; State.Coins = 10;
-    State.EquippedWeapon = Jadebound::ItemId::JadeGlaive;
+    State.Version = 3; State.Revision = 0; State.Coins = 10;
+    State.EquippedWeapon = Jadebound::ItemId::JadeGlaive; State.EquippedTorso = Jadebound::ItemId::None;
     State.Quest = Jadebound::QuestState::NotAccepted;
     State.NextDropId = 1; State.QuestKillDropId = 0; State.UnprocessedDropIds.clear();
     for (auto& Slot : State.Inventory) Slot = {Jadebound::ItemId::None, 0};
@@ -73,7 +73,7 @@ bool ReopenAs(FAutomationTestBase& Test, FScope& Scope, const Jadebound::Snapsho
         After.Slot == Before.Slot && After.CharacterId == Before.CharacterId && SameCore(After.Core, Before.Core) &&
         SameReflected(After.Reflected, Before.Reflected) && SameReflected(After.Committed, Before.Committed) &&
         SameDrops(After.Pending, Before.Pending) && SameDrops(After.SavedDrops, Before.SavedDrops))) return false;
-    for (int32 I = 0; I < 4; ++I)
+    for (int32 I = 0; I < JournalPathCount; ++I)
         if (!Test.TestTrue(TEXT("Replacement load preserves every actual journal namespace and byte"), SameBank(After.Banks[I], Before.Banks[I]))) return false;
     return true;
 }
@@ -124,7 +124,9 @@ bool CaptureHeld(const FScope& Scope, HeldImage& Out)
     Out.Held = Access::Held(*Scope.Model); Out.Candidate = Out.Held->State;
     Out.CandidateId = Out.Held->CharacterId; Out.CandidateDrops = Out.Held->PendingDrops;
     Out.Message = Scope.Model->GetPersistencePresentation().Message.ToString(); Out.Deadline = Access::Deadline(*Scope.Model);
-    for (int32 I = 0; I < 4; ++I) if (!ReadBank(Scope.Paths[I], Out.Current.Banks[I])) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I) if (!ReadBank(Scope.Paths[I], Out.Current.Banks[I])) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I)
+        if (I != 2 && I != 3 && Out.Current.Banks[I].bExists) return false;
     return FMath::IsFinite(Out.Deadline);
 }
 
@@ -138,7 +140,7 @@ bool HeldUnchanged(const FScope& Scope, const HeldImage& Before)
         !SameReflected(After.Current.Reflected, Before.Current.Reflected) || !SameReflected(After.Current.Committed, Before.Current.Committed) ||
         !SameDrops(After.Current.Pending, Before.Current.Pending) || !SameDrops(After.Current.SavedDrops, Before.Current.SavedDrops) ||
         After.Current.Slot != Before.Current.Slot || After.Current.Opens != Before.Current.Opens) return false;
-    for (int32 I = 0; I < 4; ++I) if (!SameBank(After.Current.Banks[I], Before.Current.Banks[I])) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I) if (!SameBank(After.Current.Banks[I], Before.Current.Banks[I])) return false;
     return true;
 }
 }
@@ -242,7 +244,7 @@ bool FJadeboundInventoryRevisionIntentTest::RunTest(const FString& Parameters)
             Seeded.Opens == Before.Opens + 1 && Seeded.Slot == 1 - Before.Slot && Seeded.Saved != Before.Saved &&
             Scope.LastOpenedPath == Scope.Paths[2 + Seeded.Slot] &&
             !SameBank(Seeded.Banks[2 + Seeded.Slot], Before.Banks[2 + Seeded.Slot]))) return false;
-        for (int32 I = 0; I < 4; ++I)
+        for (int32 I = 0; I < JournalPathCount; ++I)
             if (I != 2 + Seeded.Slot && !TestTrue(TEXT("Synthetic ceiling seed preserves all other real journal banks"), SameBank(Seeded.Banks[I], Before.Banks[I]))) return false;
         if (!RefuseBuy(*this, Scope, Maximum, 4, 1, MAX_int64, TEXT("Exact current ceiling cannot wrap a purchase revision or consume currency")) ||
             !RefuseUnequip(*this, Scope, Maximum, MAX_int64, TEXT("Exact current ceiling cannot wrap gear revision or add a weapon")) ||
@@ -259,8 +261,9 @@ bool FJadeboundInventoryReplicationShadowTest::RunTest(const FString& Parameters
 {
     using namespace JadeboundInventoryIntentTests;
     auto Known = InitialState(); Known.Revision = 7; Known.Coins = 4; Known.Inventory[0] = {Jadebound::ItemId::Moonleaf, 3};
+    Known.EquippedTorso = Jadebound::ItemId::WardenCoat; // Nonzero current wire witness; no earned/equip claim.
     FJadeboundProgressionState Expected;
-    if (!TestTrue(TEXT("Independent v2 presentation payload encodes"), Jadebound::Persistence::EncodeStateV2(Known, Expected))) return false;
+    if (!TestTrue(TEXT("Independent v3 presentation payload encodes"), Jadebound::Persistence::EncodeStateV3(Known, Expected))) return false;
     auto Wire = Expected; Wire.ExactRevision = 0;
     if (!TestTrue(TEXT("Supported signed wire revision repairs stale save-only shadow while preserving complete payload"),
         Jadebound::Presentation::ApplyReplicatedInventoryRevision(Wire) && SameReflected(Wire, Expected))) return false;
@@ -305,13 +308,13 @@ bool FJadeboundInventoryHeldIntentTest::RunTest(const FString& Parameters)
     FJadeboundProgressionState Encoded;
     if (!ReceiptIs(*this, *Scope.Model, Sequence, TEXT("Buy"), false, 1, 0, TEXT("Purchase reaches held candidate once"), true) ||
         !TestTrue(TEXT("Failed persistence holds complete r1 while verified payload and bank slot remain r0"),
-            CaptureHeld(Scope, Held) && Jadebound::Persistence::EncodeStateV2(Candidate, Encoded) &&
+            CaptureHeld(Scope, Held) && Jadebound::Persistence::EncodeStateV3(Candidate, Encoded) &&
             SameCore(Held.Current.Core, Candidate) && SameReflected(Held.Current.Reflected, Encoded) && SameReflected(Held.Candidate, Encoded) &&
             Held.CandidateId == Scope.Id && Held.CandidateDrops.IsEmpty() && Held.Current.Pending.IsEmpty() &&
             Held.Current.Saved == InitialBanks.Saved && Held.Current.CharacterId == InitialBanks.CharacterId &&
             SameReflected(Held.Current.Committed, InitialBanks.Committed) && SameDrops(Held.Current.SavedDrops, InitialBanks.SavedDrops) &&
             Held.Current.Slot == InitialBanks.Slot && Held.Current.Opens == InitialBanks.Opens + 1)) return false;
-    for (int32 I = 0; I < 4; ++I)
+    for (int32 I = 0; I < JournalPathCount; ++I)
         if (!TestTrue(TEXT("Failed opener did not rewrite any actual journal bank"), SameBank(Held.Current.Banks[I], InitialBanks.Banks[I]))) return false;
     const int64 HeldRevisions[] = {0, 1};
     for (const int64 Revision : HeldRevisions)
@@ -340,12 +343,61 @@ bool FJadeboundInventoryHeldIntentTest::RunTest(const FString& Parameters)
         Verified.Opens == Held.Current.Opens + 1 && Verified.Slot == 1 - Held.Current.Slot &&
         Scope.LastOpenedPath == Scope.Paths[2 + Verified.Slot] && Verified.Saved != Held.Current.Saved &&
         !SameBank(Verified.Banks[2 + Verified.Slot], Held.Current.Banks[2 + Verified.Slot]))) return false;
-    for (int32 I = 0; I < 4; ++I)
+    for (int32 I = 0; I < JournalPathCount; ++I)
         if (I != 2 + Verified.Slot && !TestTrue(TEXT("Held retry preserves all other actual bank bytes"), SameBank(Verified.Banks[I], Held.Current.Banks[I]))) return false;
     if (!RefuseBuy(*this, Scope, Candidate, 4, 1, 0, TEXT("Original pre-hold token remains stale after candidate verification"))) return false;
     auto Second = InitialState(); Second.Revision = 2; Second.Coins = 6; Second.Inventory[0] = {Jadebound::ItemId::Moonleaf, 2};
     if (!BuyAndAdvance(*this, Scope, Second, 4, 1, 1, TEXT("Only a fresh post-hold token purchases the second leaf")) || !ReopenAs(*this, Scope, Second)) return false;
     AddInfo(TEXT("Controlled journal opener failure plus actual held-candidate retry/readback and replacement actor. Future/expired retry deadlines are explicit fixture perturbations; no elapsed backoff, power-loss/crash recovery, clients or gameplay proof."));
+    return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJadeboundInventoryTorsoHeldTest,
+    "Jadebound.Progression.InventoryTorsoHeld", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FJadeboundInventoryTorsoHeldTest::RunTest(const FString& Parameters)
+{
+    using namespace JadeboundInventoryIntentTests;
+    FScope Scope(*this);
+    if (!Scope.bValid) return false;
+    Image Fresh, Seeded;
+    auto Seed = InitialState(); Seed.Revision = 1; Seed.EquippedTorso = Jadebound::ItemId::WardenCoat;
+    // Synthetic owned armor seed at a new revision; no earned/equip or appearance claim.
+    if (!Scope.Capture(Fresh) || !TestTrue(TEXT("Trusted nonzero torso seed commits a complete V3 r1 with one actual write"),
+        Access::SeedLocalFixtureSnapshot(*Scope.Model, Seed) && Scope.Advanced(Fresh, Seed) && Scope.Capture(Seeded))) return false;
+    auto Candidate = Seed; Candidate.Revision = 2; Candidate.Coins = 8; Candidate.Inventory[0] = {Jadebound::ItemId::Moonleaf, 1};
+    Access::SetOpener(*Scope.Model, [&Scope](const FString& Path) -> IFileHandle*
+    {
+        if (Path != Scope.Paths[2] && Path != Scope.Paths[3]) { Scope.bForeign = true; return nullptr; }
+        ++Scope.Opens; Scope.LastOpenedPath = Path;
+        return nullptr; // Controlled first-opener failure; no file was opened.
+    });
+    const int64 Sequence = Scope.Model->GetLastActionReceipt().Sequence;
+    Access::BuyRequest(*Scope.Model, 4, 1, 1);
+    HeldImage Held;
+    FJadeboundProgressionState Encoded;
+    if (!ReceiptIs(*this, *Scope.Model, Sequence, TEXT("Buy"), false, 2, 1, TEXT("Nonzero torso purchase reaches held r2 once"), true) ||
+        !TestTrue(TEXT("Held core/reflection/candidate preserve armor while committed V3 r1 retains its full original payload"),
+            CaptureHeld(Scope, Held) && Jadebound::Persistence::EncodeStateV3(Candidate, Encoded) &&
+            SameCore(Held.Current.Core, Candidate) && SameReflected(Held.Current.Reflected, Encoded) && SameReflected(Held.Candidate, Encoded) &&
+            Held.Current.Core.EquippedTorso == Jadebound::ItemId::WardenCoat && Held.Candidate.EquippedTorso == 8 &&
+            Held.CandidateId == Scope.Id && Held.CandidateDrops.IsEmpty() && Held.Current.Pending.IsEmpty() &&
+            Held.Current.Saved == Seeded.Saved && Held.Current.CharacterId == Seeded.CharacterId &&
+            SameReflected(Held.Current.Committed, Seeded.Committed) && SameDrops(Held.Current.SavedDrops, Seeded.SavedDrops) &&
+            Held.Current.Committed.EquippedTorso == 8 && Held.Current.Slot == Seeded.Slot && Held.Current.Opens == Seeded.Opens + 1)) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I)
+        if (!TestTrue(TEXT("Failed armored purchase preserves all eight actual namespace banks"), SameBank(Held.Current.Banks[I], Seeded.Banks[I]))) return false;
+    Scope.InstallOpener();
+    Access::ExpireLocalFixtureDeadline(*Scope.Model); // Explicit fixture deadline, no elapsed-backoff claim.
+    if (!CaptureHeld(Scope, Held) || !TestTrue(TEXT("One retry verifies the same armored r2 with no second transaction or acknowledgment"),
+        Access::Retry(*Scope.Model) && Scope.StateIs(Candidate) && Scope.Model->GetLastActionReceipt().Sequence == Sequence + 1)) return false;
+    Image Verified;
+    if (!TestTrue(TEXT("Armored retry commits one bank and clears held state/cache through the complete clean fixture check"),
+        Scope.Capture(Verified) && Verified.Opens == Held.Current.Opens + 1 && Verified.Slot == 1 - Held.Current.Slot &&
+        Scope.LastOpenedPath == Scope.Paths[2 + Verified.Slot] && Verified.Saved != Held.Current.Saved &&
+        !SameBank(Verified.Banks[2 + Verified.Slot], Held.Current.Banks[2 + Verified.Slot]))) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I)
+        if (I != 2 + Verified.Slot && !TestTrue(TEXT("Armored retry changes no other namespace bank"), SameBank(Verified.Banks[I], Held.Current.Banks[I]))) return false;
+    if (!ReopenAs(*this, Scope, Candidate)) return false;
+    AddInfo(TEXT("Synthetic nonzero armor fixture, actual buy handler, failed opener, held retry and replacement actor full-state readback. No armor earning, visible equip, gameplay, clients, networking, elapsed backoff or crash recovery proof."));
     return true;
 }
 #endif

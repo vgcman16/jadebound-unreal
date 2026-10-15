@@ -8,7 +8,8 @@
 #include "Combat/PlayerLifeRules.h"
 #include "Development/DevelopmentIdentity.h"
 #include "Domain/ProgressionCore.h"
-#include "Persistence/ProgressionSaveV2.h"
+#include "Persistence/ProgressionSaveV3.h"
+#include "Persistence/JournalNamespacePaths.h"
 #include "Animation/AnimMontage.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -101,7 +102,8 @@ struct FJadeboundRecipientNativeTestAccess
     static const UJadeboundCharacterSave* Held(const AJadeboundProgressionActor& Model) { return Model.HeldSaveCandidate.Get(); }
     static int32 Slot(const AJadeboundProgressionActor& Model) { return Model.LastSaveSlot; }
     static bool Clean(const AJadeboundProgressionActor& Model)
-    { return !Model.bPersistenceBlocked && !Model.bUnsavedCandidate && !Model.HeldSaveCandidate; }
+    { return !Model.bPersistenceBlocked && !Model.bUnsavedCandidate && !Model.HeldSaveCandidate &&
+        Model.bV3JournalAdmitted && Model.HeldJournalBytes.IsEmpty() && Model.HeldJournalPath.IsEmpty() && Model.HeldJournalSlot == INDEX_NONE; }
     static bool OneOwnedVisual(const AJadeboundProgressionActor& Model)
     {
         return Model.DropVisuals.Num() == 1 && IsValid(Model.DropVisuals[0]) &&
@@ -145,13 +147,16 @@ struct FJadeboundRecipientNativeTestAccess
 
 namespace JadeboundRecipientNative
 {
+// 0/1 V1, 2/3 current V3, 4/5 retained V2, 6/7 forward V4.
+inline constexpr int32 JournalPathCount = 8;
+static_assert(Jadebound::SnapshotVersion == 3, "Current recipient fixture requires the V3 domain");
 using Access = FJadeboundRecipientNativeTestAccess;
 const FVector EnemyPoint(-26.777, 31.802, 92.15);
 
 bool SameCore(const Jadebound::Snapshot& A, const Jadebound::Snapshot& B)
 {
     if (A.Version != B.Version || A.Revision != B.Revision || A.Coins != B.Coins ||
-        A.EquippedWeapon != B.EquippedWeapon || A.Quest != B.Quest || A.NextDropId != B.NextDropId ||
+        A.EquippedWeapon != B.EquippedWeapon || A.EquippedTorso != B.EquippedTorso || A.Quest != B.Quest || A.NextDropId != B.NextDropId ||
         A.QuestKillDropId != B.QuestKillDropId || A.UnprocessedDropIds != B.UnprocessedDropIds) return false;
     for (uint32 Index = 0; Index < Jadebound::InventorySlotCount; ++Index)
         if (A.Inventory[Index].Id != B.Inventory[Index].Id || A.Inventory[Index].Count != B.Inventory[Index].Count) return false;
@@ -171,11 +176,11 @@ bool Known(const AJadeboundProgressionActor& Model, const Jadebound::Snapshot& E
     const FJadeboundProgressionState ActualReflected = Model.GetProgressionState();
     Jadebound::Snapshot Disk;
     const UJadeboundCharacterSave* Saved = Access::Committed(Model);
-    return Jadebound::Persistence::EncodeStateV2(Expected, Reflected) &&
+    return Jadebound::Persistence::EncodeStateV3(Expected, Reflected) &&
         SameCore(Access::Core(Model), Expected) && SameDrops(Access::Drops(Model), ExpectedDrops) &&
         FJadeboundProgressionState::StaticStruct()->CompareScriptStruct(&ActualReflected, &Reflected, 0) &&
         Saved && Saved->CharacterId == Model.GetServerCharacterId() &&
-        Jadebound::Persistence::DecodeStateV2(Saved->State, Disk) && SameCore(Disk, Expected) &&
+        Jadebound::Persistence::DecodeStateV3(Saved->State, Disk) && SameCore(Disk, Expected) &&
         SameDrops(Saved->PendingDrops, ExpectedDrops) && Access::Clean(Model);
 }
 struct BankImage { bool bExists = false; TArray<uint8> Bytes; };
@@ -184,8 +189,9 @@ struct OpenTrace { int32 Count = 0; bool bForeign = false; TArray<FString> Paths
 bool ReadBank(const FString& Path, BankImage& Out)
 {
     IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-    Out.bExists = Files.FileExists(*Path);
+    Out.bExists = Jadebound::Persistence::HasJournalEntry(Files, Path); Out.Bytes.Reset();
     if (!Out.bExists) return true;
+    if (!Files.FileExists(*Path) || Files.DirectoryExists(*Path)) return false;
     const int64 Bytes = Files.FileSize(*Path);
     if (Bytes <= 0 || Bytes > 1024 * 1024 + 32) return false;
     TUniquePtr<IFileHandle> Handle(Files.OpenRead(*Path));
@@ -204,7 +210,7 @@ struct ModelImage
     const UJadeboundCharacterSave* Committed = nullptr;
     const UJadeboundCharacterSave* Held = nullptr;
     int32 Slot = 0, Opens = 0;
-    BankImage Banks[4];
+    BankImage Banks[JournalPathCount];
 };
 
 bool IsOwnedUserDir(FString& Out)
@@ -240,7 +246,7 @@ struct FScope
     UStaticMesh* Ore = nullptr;
     UStaticMesh* Parcel = nullptr;
     UAnimMontage* Montage = nullptr;
-    FString Ids[2], Paths[2][4]; // Each identity: original A/B, v2 A/B.
+    FString Ids[2], Paths[2][JournalPathCount]; // Each identity: V1, current V3, retained V2, forward V4.
     OpenTrace Traces[2];
     TArray<AJadeboundProgressionActor*> AllModels;
     bool bValid = false;
@@ -266,9 +272,16 @@ struct FScope
             Ids[Index] = FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower();
             if (!Jadebound::Development::IsCharacterId(Ids[Index]) || (Index == 1 && Ids[1] == Ids[0]))
             { Test.AddError(TEXT("Distinct canonical fresh GUID identities required.")); return; }
-            for (int32 Bank = 0; Bank < 4; ++Bank)
-                if (!Jadebound::Persistence::TryJournalPath(true, Ids[Index], Bank % 2, Bank >= 2, Paths[Index][Bank]) ||
-                    !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Paths[Index][Bank]), User))
+            Jadebound::Persistence::JournalNamespacePaths Namespaces;
+            if (!Jadebound::Persistence::BuildJournalNamespacePaths(true, Ids[Index], Namespaces))
+            { Test.AddError(TEXT("Current and retained journal namespace paths must be valid.")); return; }
+            for (int32 Slot = 0; Slot < 2; ++Slot)
+            {
+                Paths[Index][Slot] = Namespaces.Banks[0][Slot]; Paths[Index][2 + Slot] = Namespaces.Banks[2][Slot];
+                Paths[Index][4 + Slot] = Namespaces.Banks[1][Slot]; Paths[Index][6 + Slot] = Namespaces.ForwardV4[Slot];
+            }
+            for (int32 Bank = 0; Bank < JournalPathCount; ++Bank)
+                if (!FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Paths[Index][Bank]), User))
                 { Test.AddError(TEXT("Production journal path escaped owned UserDir.")); return; }
             if (FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*FPaths::GetPath(Paths[Index][2])))
             { Test.AddError(TEXT("GUID directory already exists; no reuse/reset.")); return; }
@@ -353,7 +366,7 @@ struct FScope
         const auto& Model = *Models[Index];
         Out.State = Access::Core(Model); Out.Reflected = Model.GetProgressionState(); Out.Drops = Access::Drops(Model);
         Out.Committed = Access::Committed(Model); Out.Held = Access::Held(Model); Out.Slot = Access::Slot(Model); Out.Opens = Traces[Index].Count;
-        for (int32 Bank = 0; Bank < 4; ++Bank) if (!ReadBank(Paths[Index][Bank], Out.Banks[Bank])) return false;
+        for (int32 Bank = 0; Bank < JournalPathCount; ++Bank) if (!ReadBank(Paths[Index][Bank], Out.Banks[Bank])) return false;
         return !Traces[Index].bForeign;
     }
     bool Unchanged(int32 Index, const ModelImage& Before) const
@@ -362,7 +375,7 @@ struct FScope
         if (!Capture(Index, After) || !SameCore(Before.State, After.State) || !SameDrops(Before.Drops, After.Drops) ||
             !FJadeboundProgressionState::StaticStruct()->CompareScriptStruct(&Before.Reflected, &After.Reflected, 0) ||
             Before.Committed != After.Committed || Before.Held != After.Held || Before.Slot != After.Slot || Before.Opens != After.Opens) return false;
-        for (int32 Bank = 0; Bank < 4; ++Bank) if (!EqualBank(Before.Banks[Bank], After.Banks[Bank])) return false;
+        for (int32 Bank = 0; Bank < JournalPathCount; ++Bank) if (!EqualBank(Before.Banks[Bank], After.Banks[Bank])) return false;
         return true;
     }
 };
@@ -477,8 +490,8 @@ bool FJadeboundRecipientNativeHitTest::RunTest(const FString& Parameters)
         Known(*Scope.Models[0], Picked, Empty) && Scope.Traces[0].Count == BeforeA.Opens)) return false;
     ModelImage Reopened;
     if (!Scope.Capture(0, Reopened)) return false;
-    for (int32 Bank = 0; Bank < 4; ++Bank)
-        if (!TestTrue(TEXT("Reopen preserves all original/v2 bank bytes"), EqualBank(Reopened.Banks[Bank], BeforeA.Banks[Bank]))) return false;
+    for (int32 Bank = 0; Bank < JournalPathCount; ++Bank)
+        if (!TestTrue(TEXT("Reopen preserves all retained journal namespace bank bytes"), EqualBank(Reopened.Banks[Bank], BeforeA.Banks[Bank]))) return false;
     if (!TestTrue(TEXT("Nonrecipient B and its actual banks remain at the post-Logout baseline"),
         Scope.Unchanged(1, BeforeB) && Known(B, Initial, Empty))) return false;
     AddInfo(TEXT("Native trusted-hit/death/Logout/journal/public-pickup integration only. No positive attack dispatch, input, timing, pose, login, network, visibility, scheduling, respawn or persistent-world kill identity proof."));

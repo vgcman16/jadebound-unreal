@@ -36,8 +36,8 @@ bool FJadeboundMerchantBulkSaleTest::RunTest(const FString& Parameters)
         Scope.Reopen() && Scope.StateIs(SoldStack) && Access::BankSlot(*Scope.Model) == Final.Slot && Scope.Opens == Final.Opens)) return false;
     Image Reopened;
     if (!Scope.Capture(Reopened)) { AddError(TEXT("Reopened actual IO baseline unavailable.")); return false; }
-    for (int32 I = 0; I < 4; ++I)
-        if (!TestTrue(TEXT("Replacement ReadSave does not rewrite or discard either journal namespace"), SameBank(Final.Banks[I], Reopened.Banks[I]))) return false;
+    for (int32 I = 0; I < JournalPathCount; ++I)
+        if (!TestTrue(TEXT("Replacement ReadSave does not rewrite or discard any retained journal namespace"), SameBank(Final.Banks[I], Reopened.Banks[I]))) return false;
     if (!TestTrue(TEXT("Replayed stale bulk sale after reopen cannot pay again or write"),
         !Scope.Model->SellItem(0, 4, 2) && Scope.Unchanged(Reopened) && Scope.StateIs(SoldStack))) return false;
     AddInfo(FString::Printf(TEXT("Actual public merchant buy5/sell1/sell4/refusals and replacement r3 readback verified by this fixture; files retained: %s. Trusted registry/readiness, no UI input/admission/network/client proof."), *FPaths::GetPath(Scope.Paths[2])));

@@ -1,4 +1,5 @@
 #include "JadeboundProgressionActor.h"
+#include "JadeboundOriginalHeroMovementComponent.h"
 #include "Domain/ProgressionCore.h"
 #include "Domain/RecipientLedger.h"
 #include "JadeboundDevelopmentGameMode.h"
@@ -11,6 +12,10 @@
 #include "Combat/RecipientAnimationRules.h"
 #include "Engine/SkeletalMesh.h"
 #include "Persistence/ProgressionSaveV2.h"
+#include "Persistence/ProgressionSaveV3.h"
+#include "Persistence/JournalNamespacePaths.h"
+#include "Domain/LegacyToTorsoMigration.h"
+#include "Domain/TorsoMigration.h"
 #include "Persistence/JournalIO.h"
 #include "Presentation/LootVisualMath.h"
 #include "Presentation/InventoryReplication.h"
@@ -187,7 +192,8 @@ bool IsQualifiedCursorPerimeter(UWorld* World, const AActor* Candidate)
         Candidate->GetClass() != AStaticMeshActor::StaticClass() ||
         Candidate->GetLevel() != World->PersistentLevel ||
         !World->PersistentLevel ||
-        World->PersistentLevel->GetOutermost()->GetName() != TEXT("/Game/Jadebound/Playable/AreaV002/L_JadeboundProgression_AreaV002") ||
+        (World->PersistentLevel->GetOutermost()->GetName() != TEXT("/Game/Jadebound/Playable/AreaV002/L_JadeboundProgression_AreaV002") &&
+         !UJadeboundOriginalHeroMovementComponent::IsMovementWorld(World)) ||
         !Candidate->IsHidden() || !Candidate->GetActorEnableCollision()) return false;
     static const FName Names[4] = {TEXT("StaticMeshActor_10"), TEXT("StaticMeshActor_11"), TEXT("StaticMeshActor_12"), TEXT("StaticMeshActor_13")};
     static const FVector Locations[4] = {
@@ -423,7 +429,7 @@ bool ChooseGroupedLootLabelPosition(const FVector& Anchor, const FVector& Repres
 }
 bool ValidateDrops(const Jadebound::Snapshot& Candidate, const TArray<FJadeboundSavedDrop>& Drops)
 {
-    return Jadebound::Persistence::ValidateDropsV2(Candidate, Drops);
+    return Jadebound::Persistence::ValidateDropsV3(Candidate, Drops);
 }
 }
 
@@ -498,9 +504,10 @@ FString AJadeboundProgressionActor::GetSaveCharacterId() const
 }
 FString AJadeboundProgressionActor::GetJournalPath(int32 Slot) const
 {
-    FString Path;
-    Jadebound::Persistence::TryJournalPath(bDevelopmentModel, GetSaveCharacterId(), Slot, true, Path);
-    return Path;
+    if (Slot != 0 && Slot != 1) return FString();
+    Jadebound::Persistence::JournalNamespacePaths Paths;
+    return Jadebound::Persistence::BuildJournalNamespacePaths(bDevelopmentModel,GetSaveCharacterId(),Paths)
+        ? Paths.Banks[2][Slot] : FString();
 }
 bool AJadeboundProgressionActor::ConfigureDevelopmentOwner(APlayerController* Controller, const FString& Id, UStaticMesh* Glaive)
 {
@@ -582,6 +589,7 @@ void AJadeboundProgressionActor::BeginPlay()
 {
     Super::BeginPlay();
     BindGameplay();
+    if (UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()) && GetWorld()->IsPaused()) return;
     if (HasAuthority()) SyncLegacyQuestPresentation();
     if (HasAuthority())
     {
@@ -589,7 +597,9 @@ void AJadeboundProgressionActor::BeginPlay()
         bReady = bWriterReady && ReadSave(true);
         bServerModelInitialized = bReady;
         RefreshState();
-        if (bReady) Feedback = FText::FromString(TEXT("LMB: walk / target attack   Ctrl+LMB: jump   F1-F10: assigned actions   RMB: loot / selected skill   I: bag   Progress saves automatically"));
+        if (bReady) Feedback = FText::FromString(UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld())
+            ? TEXT("Original-body movement test: LMB move, Ctrl+LMB jump, CapsLock walk/run, I bag. Combat and revival unavailable. Progress saves automatically.")
+            : TEXT("LMB: walk / target attack   Ctrl+LMB: jump   F1-F10: assigned actions   RMB: loot / selected skill   I: bag   Progress saves automatically"));
     }
 }
 void AJadeboundProgressionActor::EndPlay(const EEndPlayReason::Type Reason)
@@ -660,6 +670,8 @@ void AJadeboundProgressionActor::Tick(float Seconds)
     const bool bPersistenceAttempted = TickPersistenceRetry();
     if (!BeforePersistence.IsValid() || BeforePersistence->IsActorBeingDestroyed() || bPersistenceEndingPlay) return;
     BindGameplay();
+    if (UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()) &&
+        !UJadeboundOriginalHeroMovementComponent::IsReady(Cast<ACharacter>(Hero))) return;
     TickRevive();
     BindNativePlayerLife();
     // New journals have no pending loot and may not yet have built visuals;
@@ -732,6 +744,28 @@ void AJadeboundProgressionActor::BindGameplay()
                     Component->SetVisibility(false, true);
                     Component->SetHiddenInGame(true, true);
                 }
+        }
+    }
+    if (UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()) && IsValid(Hero) && IsValid(Player))
+    {
+        FString Reason;
+        if (!UJadeboundOriginalHeroMovementComponent::Install(Cast<ACharacter>(Hero), Player, Reason))
+        {
+            Feedback = FText::FromString(Reason);
+            UE_LOG(LogTemp, Error, TEXT("Source137 movement preview paused: %s"), *Reason);
+            if (Player && Player->IsLocalController() && HasAuthority() && GetNetMode()==NM_Standalone && Player->GetPawn()==Hero)
+            {
+                // A rejected preview also stops local pawn input/movement if this mode refuses pausing.
+                if (auto* FailedPawn=Cast<ACharacter>(Hero))
+                {
+                    FailedPawn->SetCanBeDamaged(false);
+                    FailedPawn->DisableInput(Player);
+                    if (auto* Movement=FailedPawn->GetCharacterMovement())
+                    { Movement->StopMovementImmediately(); Movement->DisableMovement(); }
+                }
+                Player->SetPause(true);
+            }
+            return;
         }
     }
     if (Hero && !WeaponComponent)
@@ -1288,7 +1322,9 @@ ACharacter* AJadeboundProgressionActor::ResolveClickWalkScope() const
         !IsValid(Hero) || Player->GetPawn() != Hero || Hero->GetController() != Player ||
         Hero->GetClass()->GetPathName() != TEXT("/Game/Jadebound/Tests/GlaiveCombatV006/BP_GlaiveHero_V006.BP_GlaiveHero_V006_C") ||
         !GetWorld() || !GetWorld()->IsGameWorld() || GetWorld()->WorldType == EWorldType::PIE ||
-        GetWorld()->GetMapName() != TEXT("L_JadeboundProgression_AreaV002") ||
+        (GetWorld()->GetMapName() != TEXT("L_JadeboundProgression_AreaV002") &&
+         !(UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()) &&
+           UJadeboundOriginalHeroMovementComponent::IsReady(Cast<ACharacter>(Hero)))) ||
         Player->GetClass()->GetPathName() != TEXT("/Game/Jadebound/Tests/GlaiveCombatV006/BP_GlaiveController_V006.BP_GlaiveController_V006_C") ||
         !GetWorld()->GetAuthGameMode() || GetWorld()->GetAuthGameMode()->GetClass()->GetPathName() !=
             TEXT("/Game/Jadebound/Tests/GlaiveCombatV006/BP_GlaiveMode_V006.BP_GlaiveMode_V006_C")) return nullptr;
@@ -1446,17 +1482,24 @@ void AJadeboundProgressionActor::UpdateClickWalkBindings()
     }
     // Jump and charged are optional actual hero bindings. Combat IMC has no
     // Jump; do not make that absent template action a walking prerequisite.
-    // Charged remains non-consuming, including the original gamepad trigger.
+    // Original map keeps charged non-consuming. Source137 refuses every combat phase.
     for (const UInputAction* Action : {Move, Jump, Charged})
     {
         if (!Action) continue;
         for (ETriggerEvent Event : {ETriggerEvent::Started,ETriggerEvent::Triggered,ETriggerEvent::Ongoing})
         {
             auto& Binding = Gate->BindAction(Action, Event, this, &AJadeboundProgressionActor::HandleManualWalkAction);
-            Binding.SetShouldConsume(false);
+            Binding.SetShouldConsume(Action==Charged && UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()));
             ClickWalkBindingHandles.Add(Binding.GetHandle());
         }
     }
+    if (Charged && UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()))
+        for (ETriggerEvent Event : {ETriggerEvent::Completed,ETriggerEvent::Canceled})
+        {
+            auto& Binding=Gate->BindAction(Charged, Event, this, &AJadeboundProgressionActor::HandleManualWalkAction);
+            Binding.SetShouldConsume(true);
+            ClickWalkBindingHandles.Add(Binding.GetHandle());
+        }
     // The engine defers this rebuild; IsClickWalkAvailable checks the actual
     // resulting mappings on the next input frame. Never rebuild in a callback.
     Subsystem->AddMappingContext(ClickWalkContext, 1000);
@@ -1595,6 +1638,8 @@ void AJadeboundProgressionActor::HandleClickWalkPressed(const FInputActionInstan
     if (!bControl && TryHandleConquerInteractionHit(Character, Hit)) return;
     if (!bControl && Hit.GetActor() == LegacyTarget)
     {
+        if (UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()))
+        { StopClickWalk(TEXT("OriginalHeroMovementPreview"), true); Feedback=FText::FromString(TEXT("Movement and equipment test: combat and revival are not available yet.")); return; }
         if (State.EquippedWeapon == 0)
         { StopClickWalk(TEXT("Unarmed"), true); Feedback = FText::FromString(TEXT("Equip a weapon from your bag before attacking.")); return; }
         const auto Health = ReadHealthSample(LegacyTarget, TEXT("CombatHealth"), TEXT("CombatMaxHealth"));
@@ -2127,6 +2172,8 @@ bool AJadeboundProgressionActor::BuildPassingCurrent(ACharacter* Character, FVec
 
 void AJadeboundProgressionActor::CastSelectedSkill()
 {
+    if (UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld()))
+    { Feedback=FText::FromString(TEXT("Movement and equipment test: combat skills are not available yet.")); return; }
     // Do not replace held journal/retry feedback with a generic skill error.
     if (bPersistenceBlocked || bUnsavedCandidate) return;
     ACharacter* Character = ResolveClickWalkCharacter();
@@ -2463,8 +2510,9 @@ void AJadeboundProgressionActor::BindAttackActionGate()
 {
     auto* Gate = Cast<UEnhancedInputComponent>(InputComponent);
     if (!Gate || !Player || !Player->IsLocalController() || !Hero) return;
+    const bool bOriginalMovementPreview=UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld());
     if (AttackGateComponent.Get() == Gate && AttackGatePawn.Get() == Hero &&
-        AttackGateBindingHandles.Num() == 3) return;
+        AttackGateBindingHandles.Num() == (bOriginalMovementPreview ? 5 : 3)) return;
     if (auto* Previous = AttackGateComponent.Get())
         for (uint32 Handle : AttackGateBindingHandles) Previous->RemoveBindingByHandle(Handle);
     AttackGateBindingHandles.Reset();
@@ -2483,8 +2531,9 @@ void AJadeboundProgressionActor::BindAttackActionGate()
             break;
         }
     if (!AttackAction) return;
-    for (ETriggerEvent Event : {ETriggerEvent::Started, ETriggerEvent::Triggered, ETriggerEvent::Ongoing})
+    for (ETriggerEvent Event : {ETriggerEvent::Started, ETriggerEvent::Triggered, ETriggerEvent::Ongoing, ETriggerEvent::Completed, ETriggerEvent::Canceled})
     {
+        if (!bOriginalMovementPreview && (Event==ETriggerEvent::Completed || Event==ETriggerEvent::Canceled)) continue;
         auto& Binding = Gate->BindAction(AttackAction, Event, this,
             &AJadeboundProgressionActor::HandleAttackActionGate);
         Binding.SetShouldConsume(true);
@@ -2592,6 +2641,7 @@ bool AJadeboundProgressionActor::IsCloseFrameGuardActive() const
 }
 bool AJadeboundProgressionActor::IsAttackBlocked() const
 {
+    if (UJadeboundOriginalHeroMovementComponent::IsMovementWorld(GetWorld())) return true; // No qualified original-body combat/physics yet.
     if (bDevelopmentModel) return true; // Per-recipient native combat is a later slice.
     const bool bMissingLocalGate = Player && Player->IsLocalController() &&
         (!AttackGateComponent.IsValid() || AttackGatePawn.Get() != Hero ||
@@ -2720,7 +2770,7 @@ bool AJadeboundProgressionActor::AuthorityReady()
 }
 void AJadeboundProgressionActor::RefreshState()
 {
-    if (!Jadebound::Persistence::EncodeStateV2(Core->GetSnapshot(), State))
+    if (!Jadebound::Persistence::EncodeStateV3(Core->GetSnapshot(), State))
     {
         SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
             FText::FromString(TEXT("Your character state needs recovery. Existing files are protected.")));
@@ -2730,7 +2780,7 @@ void AJadeboundProgressionActor::RefreshState()
 }
 bool AJadeboundProgressionActor::DecodeState(const FJadeboundProgressionState& Source, Jadebound::Snapshot& Destination)
 {
-    return Jadebound::Persistence::DecodeStateV2(Source, Destination);
+    return Jadebound::Persistence::DecodeStateV3(Source, Destination);
 }
 bool AJadeboundProgressionActor::FinishTransaction(const Jadebound::Result& Result, const FText& Success)
 {
@@ -3258,6 +3308,12 @@ bool AJadeboundProgressionActor::WriteSave()
         !GetWorld() || GetWorld()->bIsTearingDown || IsActorBeingDestroyed()) return false;
     if (PersistencePresentation.FailureKind == EJadeboundPersistenceFailureKind::RecoveryRequired) return false;
     if (!HasJournalWriterLease()) return false;
+    if (!bV3JournalAdmitted)
+    {
+        SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
+            FText::FromString(TEXT("Your character save format has not been admitted. Existing files are protected.")));
+        return false; // No path is opened before explicit V3 startup admission.
+    }
     if (PersistencePresentation.FailureKind == EJadeboundPersistenceFailureKind::Retryable)
     {
         const double Now = FPlatformTime::Seconds();
@@ -3266,6 +3322,12 @@ bool AJadeboundProgressionActor::WriteSave()
     bUnsavedCandidate = true;
     if (!HeldSaveCandidate)
     {
+        if (!HeldJournalBytes.IsEmpty() || !HeldJournalPath.IsEmpty() || HeldJournalSlot != INDEX_NONE)
+        {
+            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
+                FText::FromString(TEXT("Saving needs recovery. The held journal image is inconsistent; existing files are protected.")));
+            return false;
+        }
         auto* NewCandidate = Cast<UJadeboundCharacterSave>(UGameplayStatics::CreateSaveGameObject(UJadeboundCharacterSave::StaticClass()));
         if (!NewCandidate)
         {
@@ -3286,13 +3348,31 @@ bool AJadeboundProgressionActor::WriteSave()
             FText::FromString(TEXT("Saving needs recovery. Progress is held and existing files are protected. Keep the game open.")));
         return false;
     }
-    const int32 Slot = 1 - LastSaveSlot;
-    TArray<uint8> Written, ReadBack;
-    const FString Path = GetJournalPath(Slot);
-    if (Path.IsEmpty() || !EncodeJournal(Save, Written))
+    if (HeldJournalSlot == INDEX_NONE)
+    {
+        TArray<uint8> FirstBytes;
+        const int32 FirstSlot = 1 - LastSaveSlot;
+        const FString FirstPath = GetJournalPath(FirstSlot);
+        if (!HeldJournalBytes.IsEmpty() || !HeldJournalPath.IsEmpty() || FirstPath.IsEmpty() || !EncodeJournal(Save, FirstBytes))
+        {
+            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
+                FText::FromString(TEXT("Saving needs recovery. Progress is held and existing files are protected. Keep the game open.")));
+            return false;
+        }
+        // Encode exactly once, before the first OS-facing open. Custom-version
+        // registry/header changes cannot alter an uncertain transaction's retry.
+        HeldJournalBytes = MoveTemp(FirstBytes);
+        HeldJournalPath = FirstPath;
+        HeldJournalSlot = FirstSlot;
+    }
+    const int32 Slot = HeldJournalSlot;
+    const FString& Path = HeldJournalPath;
+    const TArray<uint8>& Written = HeldJournalBytes;
+    TArray<uint8> ReadBack;
+    if ((Slot != 0 && Slot != 1) || LastSaveSlot != 1-Slot || Written.IsEmpty() || Path != GetJournalPath(Slot))
     {
         SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-            FText::FromString(TEXT("Saving needs recovery. Progress is held and existing files are protected. Keep the game open.")));
+            FText::FromString(TEXT("Saving needs recovery. The held journal destination is inconsistent; existing files are protected.")));
         return false;
     }
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
@@ -3355,6 +3435,9 @@ void AJadeboundProgressionActor::ClearPersistenceFailure()
     bUnsavedCandidate = false;
     bPersistenceBlocked = false;
     HeldSaveCandidate = nullptr;
+    HeldJournalBytes.Reset();
+    HeldJournalPath.Reset();
+    HeldJournalSlot = INDEX_NONE;
     PersistencePresentation = FJadeboundPersistencePresentation();
     PersistenceRetryAt = 0.0;
     PersistenceRetryStep = 0;
@@ -3386,145 +3469,8 @@ bool AJadeboundProgressionActor::TickPersistenceRetry()
     RetryHeldSave();
     return true;
 }
-bool AJadeboundProgressionActor::ReadSave(bool Initial)
-{
-    if (!HasAuthority() || GetNetMode() == NM_Client || bPersistenceEndingPlay ||
-        !GetWorld() || GetWorld()->bIsTearingDown || IsActorBeingDestroyed() ||
-        bUnsavedCandidate || bPersistenceBlocked ||
-        PersistencePresentation.FailureKind != EJadeboundPersistenceFailureKind::None) return false;
-    if (!HasJournalWriterLease()) return false;
-    FString V2Paths[2] = {GetJournalPath(0), GetJournalPath(1)};
-    if (V2Paths[0].IsEmpty() || V2Paths[1].IsEmpty())
-    {
-        SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-            FText::FromString(TEXT("Your character save needs recovery. Existing files are protected.")));
-        return false;
-    }
-    // Supported V2 startup cannot resume old history once a forward bank name
-    // exists. Presence precedes validity; a directory is also a collision.
-    // The original writer lease remains held throughout this refusal.
-    IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-    for (int32 Slot = 0; Slot < 2; ++Slot)
-    {
-        FString Forward;
-        if (!Jadebound::Persistence::TryForwardV3JournalPath(bDevelopmentModel, GetSaveCharacterId(), Slot, Forward) ||
-            Files.FileExists(*Forward) || Files.DirectoryExists(*Forward) || Files.GetStatData(*Forward).bIsValid)
-        {
-            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-                FText::FromString(TEXT("This character has a newer save format or a conflicting save entry. Use the matching build; existing files are protected.")));
-            return false; // No old bank read, migration, replacement or grant.
-        }
-    }
-    // Format boundary: even a partial first v2 bank forbids legacy fallback.
-    const bool bUseV2 = IFileManager::Get().FileExists(*V2Paths[0]) || IFileManager::Get().FileExists(*V2Paths[1]);
-    UJadeboundCharacterSave* Best = nullptr;
-    Jadebound::Snapshot BestSnapshot;
-    JadeboundLegacyV1::Snapshot BestLegacy;
-    uint64 BestRevision = 0;
-    TArray<uint8> BestBytes;
-    bool bAnyExisting = bUseV2;
-    int32 BestSlot = 1;
-    for (int32 Slot = 0; Slot < 2; ++Slot)
-    {
-        FString Path = V2Paths[Slot];
-        if (!bUseV2 && !Jadebound::Persistence::TryJournalPath(bDevelopmentModel, GetSaveCharacterId(), Slot, false, Path))
-        {
-            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-                FText::FromString(TEXT("Your character save needs recovery. Existing files are protected.")));
-            return false;
-        }
-        if (!IFileManager::Get().FileExists(*Path)) continue;
-        bAnyExisting = true;
-        TArray<uint8> OriginalBytes;
-        auto* Save = ReadJournal(Path, &OriginalBytes);
-        if (!Save || Save->CharacterId != GetSaveCharacterId()) continue;
-        const int32 NamespaceVersion = static_cast<int32>(bUseV2 ? Jadebound::SnapshotVersion : JadeboundLegacyV1::SnapshotVersion);
-        if (Save->State.Version > NamespaceVersion)
-        {
-            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-                FText::FromString(TEXT("Your character save is incompatible with this bank format. Use the matching build; existing files are protected.")));
-            return false; // Never skip an owned newer-format bank to migrate an older companion.
-        }
-        Jadebound::Snapshot Candidate;
-        JadeboundLegacyV1::Snapshot Legacy;
-        if (bUseV2)
-        {
-            if (!DecodeState(Save->State, Candidate) || !ValidateDrops(Candidate, Save->PendingDrops)) continue;
-        }
-        else
-        {
-            // Rank exact original v1 revisions before applying new signed bounds.
-            if (!Jadebound::Persistence::DecodeStateV1(Save->State, Legacy) ||
-                !Jadebound::Persistence::ValidateDropsV1(Legacy, Save->PendingDrops)) continue;
-        }
-        const uint64 CandidateRevision = bUseV2 ? Candidate.Revision : Legacy.Revision;
-        if (Best && CandidateRevision == BestRevision)
-        {
-            // Compare ORIGINAL bank bytes, before any conversion or reserialization.
-            if (BestBytes != OriginalBytes)
-            {
-                SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-                    FText::FromString(TEXT("Your character save needs recovery. Existing files are protected.")));
-                return false;
-            }
-        }
-        if (!Best || CandidateRevision > BestRevision)
-        {
-            Best = Save;
-            BestRevision = CandidateRevision;
-            BestBytes = MoveTemp(OriginalBytes);
-            BestSlot = Slot;
-            if (bUseV2) BestSnapshot = std::move(Candidate);
-            else BestLegacy = std::move(Legacy);
-        }
-    }
-    if (!Best)
-    {
-        if (bAnyExisting || !Initial)
-        {
-            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-                FText::FromString(TEXT("Your character save needs recovery. Existing files are protected.")));
-            return false;
-        }
-        LastSaveSlot = 1; // Fresh v2 pair starts with A, not an old schema bank.
-        RefreshState();
-        return WriteSave();
-    }
-    if (!bUseV2)
-    {
-        bReady = false;
-        bServerModelInitialized = false;
-        Jadebound::Snapshot Migration;
-        if (!Jadebound::Persistence::BuildMigrationCandidate(BestLegacy, Migration) ||
-            !ValidateDrops(Migration, Best->PendingDrops) || !Core->LoadSnapshot(Migration).Succeeded())
-        {
-            SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-                FText::FromString(TEXT("Your character save cannot be migrated safely. Existing files are protected.")));
-            return false;
-        }
-        // No defeat, pickup or reward API is called. Both original banks survive.
-        PendingDrops = Best->PendingDrops;
-        LastCommittedSave = Best; // Last verified ORIGINAL state until v2 readback.
-        LastSaveSlot = 1; // This v2 pair has no prior committed bank.
-        RefreshState();
-        const bool Saved = WriteSave(); // Holds this exact revision+1 candidate on uncertainty.
-        RefreshDropVisuals();
-        return Saved;
-    }
-    if (!Core->LoadSnapshot(BestSnapshot).Succeeded())
-    {
-        SetPersistenceFailure(EJadeboundPersistenceFailureKind::RecoveryRequired,
-            FText::FromString(TEXT("Your character save needs recovery. Existing files are protected.")));
-        return false;
-    }
-    PendingDrops = Best->PendingDrops;
-    LastCommittedSave = Best;
-    LastSaveSlot = BestSlot;
-    ClearPersistenceFailure();
-    RefreshState();
-    RefreshDropVisuals();
-    return true;
-}
+#include "Persistence/JadeboundProgressionActorReadV3.inl"
+
 bool AJadeboundProgressionActor::SaveProgress()
 {
     bool Ok = false;
@@ -4116,8 +4062,10 @@ bool AJadeboundProgressionActor::CommitRecipientDefeat(AJadeboundNativeRaider* E
         // Pickup legitimately removes pending membership. The validated issued
         // prefix, exact owner and revision prove this life was durably awarded.
         Jadebound::Snapshot Committed;
-        return LastCommittedSave && LastCommittedSave->CharacterId == ServerCharacterId &&
-            Jadebound::Persistence::DecodeStateV2(LastCommittedSave->State, Committed) &&
+        // A held migration can retain a V1/V2 original witness. Refuse this
+        // acknowledgment without falling through to issue another death reward.
+        return LastCommittedSave && LastCommittedSave->State.Version == 3 && LastCommittedSave->CharacterId == ServerCharacterId &&
+            Jadebound::Persistence::DecodeStateV3(LastCommittedSave->State, Committed) &&
             Jadebound::Recipient::HasCommittedIssue(Committed, LastCommittedSave->PendingDrops, AwardedDrop, AwardedRevision);
     }
     if (AwardedEnemy.Get() == Enemy && LifeId <= AwardedLife) return false;

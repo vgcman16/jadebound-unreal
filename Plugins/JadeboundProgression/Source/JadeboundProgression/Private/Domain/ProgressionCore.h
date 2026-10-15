@@ -7,9 +7,9 @@
 // Portable C++17 domain contract. No Unreal types, IO, clocks or random values.
 namespace Jadebound {
 
-inline constexpr std::uint32_t SnapshotVersion = 2;
+inline constexpr std::uint32_t SnapshotVersion = 3;
 inline constexpr std::uint32_t InventorySlotCount = 12;
-inline constexpr std::uint32_t DefinitionCount = 7;
+inline constexpr std::uint32_t DefinitionCount = 8;
 inline constexpr std::uint32_t MaximumUnprocessedDrops = 4096;
 // Actor persistence uses signed int64. Keep the existing uint64 API while
 // refusing any value or increment that would be truncated by that storage.
@@ -25,7 +25,8 @@ enum class ItemId : std::uint32_t {
     Moonleaf = 4,
     JadeParcel = 5,
     JadeShard = 6,
-    Balm = 7
+    Balm = 7,
+    WardenCoat = 8
 };
 
 enum class QuestState : std::uint32_t {
@@ -48,6 +49,8 @@ struct ItemDefinition {
     bool Weapon;
     // Zero means not consumable; recovery is a percentage of authority-owned Max HP.
     std::uint32_t HealingPercent = 0;
+    // One original torso category. Assets/presentation are separate qualification.
+    bool Torso = false;
 };
 
 struct ItemStack {
@@ -61,6 +64,7 @@ struct Snapshot {
     std::int64_t Coins = 10;
     std::array<ItemStack, InventorySlotCount> Inventory{};
     ItemId EquippedWeapon = ItemId::JadeGlaive;
+    ItemId EquippedTorso = ItemId::None;
     QuestState Quest = QuestState::NotAccepted;
     // The authority assigns this ID when recording the next defeated raider.
     // It persists across reopen, so an old drop cannot become a new drop.
@@ -101,7 +105,8 @@ enum class ResultCode : std::uint32_t {
     InvalidSnapshot,
     DropReservedForQuest,
     NotConsumable,
-    DropIdOverflow
+    DropIdOverflow,
+    NotTorso
 };
 
 enum class ValidationCode : std::uint32_t {
@@ -127,7 +132,8 @@ enum class ValidationCode : std::uint32_t {
     CounterOutOfRange,
     InvalidUnprocessedDropId,
     DuplicateUnprocessedDropId,
-    UnsortedUnprocessedDropIds
+    UnsortedUnprocessedDropIds,
+    InvalidEquippedTorso
 };
 
 struct Result {
@@ -156,6 +162,8 @@ public:
     Result SplitStack(std::uint32_t inventorySlot, std::int64_t quantity);
     Result Equip(std::uint32_t inventorySlot);
     Result Unequip();
+    Result EquipTorso(std::uint32_t inventorySlot);
+    Result UnequipTorso();
     // Exactly one owned consumable; no health, IO or client-supplied effect amount.
     Result Consume(std::uint32_t inventorySlot);
 

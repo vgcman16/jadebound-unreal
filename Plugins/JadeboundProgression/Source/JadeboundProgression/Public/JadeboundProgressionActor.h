@@ -185,6 +185,7 @@ struct FJadeboundProgressionState
     UPROPERTY(BlueprintReadOnly, SaveGame, Category="Jadebound|Progression") int64 Coins = 10;
     UPROPERTY(BlueprintReadOnly, SaveGame, Category="Jadebound|Progression") TArray<FJadeboundInventorySlot> Slots;
     UPROPERTY(BlueprintReadOnly, SaveGame, Category="Jadebound|Progression") int32 EquippedWeapon = 1;
+    UPROPERTY(BlueprintReadOnly, SaveGame, Category="Jadebound|Progression") int32 EquippedTorso = 0;
     UPROPERTY(BlueprintReadOnly, SaveGame, Category="Jadebound|Progression") int32 QuestState = 0;
     UPROPERTY(EditAnywhere, NotReplicated, SaveGame, Category="Jadebound|SaveData") int64 NextDropId = 1;
     UPROPERTY(EditAnywhere, NotReplicated, SaveGame, Category="Jadebound|SaveData") int64 QuestKillDropId = 0;
@@ -337,6 +338,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
     // Native automation only: no reflected, public, or network entry point.
     friend struct FJadeboundActorBankTestAccess;
+    friend struct FJadeboundV3PersistenceTestAccess;
     friend struct FJadeboundMerchantBulkSaleTestAccess;
     friend struct FJadeboundAttackWindowTestAccess;
     friend struct FJadeboundRecipientNativeTestAccess;
@@ -442,9 +444,13 @@ private:
     UPROPERTY(Transient) TObjectPtr<UJadeboundCharacterSave> LastCommittedSave;
     // A retry serializes this same copied candidate; it never reruns its transaction.
     UPROPERTY(Transient) TObjectPtr<UJadeboundCharacterSave> HeldSaveCandidate;
+    TArray<uint8> HeldJournalBytes; // First encoded JBP1 image; never reserialize during retry.
+    FString HeldJournalPath;
+    int32 HeldJournalSlot = INDEX_NONE;
     double PersistenceRetryAt = 0.0;
     uint8 PersistenceRetryStep = 0;
     bool bPersistenceEndingPlay = false;
+    bool bV3JournalAdmitted = false; // Set only by V3-aware ReadSave under the retained writer lease.
     int32 LastSaveSlot = 1;
     int32 SeenDefeats = 0;
     int32 AttackBindingIndex = INDEX_NONE;

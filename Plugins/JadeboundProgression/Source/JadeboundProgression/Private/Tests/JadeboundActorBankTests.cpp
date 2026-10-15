@@ -1,355 +1,7 @@
 #include "JadeboundProgressionActor.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
-#include "Development/DevelopmentIdentity.h"
-#include "Domain/ProgressionCore.h"
-#include "Domain/RecipientLedger.h"
-#include "Persistence/JournalIO.h"
-#include "Persistence/ProgressionSaveV2.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
-#include "GameFramework/WorldSettings.h"
-#include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/PlatformFileManager.h"
-#include "HAL/PlatformTime.h"
-#include "Kismet/GameplayStatics.h"
-#include "Misc/AutomationTest.h"
-#include "Misc/CommandLine.h"
-#include "Misc/Guid.h"
-#include "Misc/Parse.h"
-#include "Misc/Paths.h"
-
-// Only this native test translation unit defines the actor's private friend.
-// No UFUNCTION/reflection/RPC/client or production fixture entry point exists.
-struct FJadeboundActorBankTestAccess
-{
-    static void SetIdentity(AJadeboundProgressionActor& Actor, const FString& Id, TUniquePtr<IFileHandle> Lease)
-    {
-        Actor.bDevelopmentModel = true;
-        Actor.ServerCharacterId = Id;
-        Actor.DevelopmentWriterLease = MoveTemp(Lease);
-    }
-    static void SetOpener(AJadeboundProgressionActor& Actor, TFunction<IFileHandle*(const FString&)> Opener)
-    { Actor.AutomationJournalOpener = MoveTemp(Opener); }
-    static bool Read(AJadeboundProgressionActor& Actor, bool bInitial = true) { return Actor.ReadSave(bInitial); }
-    static const IFileHandle* ForwardGuardLease(const AJadeboundProgressionActor& Actor)
-    { return Actor.DevelopmentWriterLease.Get(); }
-    static bool BuyMoonleafOnce(AJadeboundProgressionActor& Actor)
-    {
-        const auto Result = Actor.Core->Buy(Jadebound::ItemId::Moonleaf, 1);
-        if (!Result.Succeeded() || !Result.Changed) return false;
-        Actor.RefreshState();
-        return Actor.WriteSave();
-    }
-    static bool AcceptQuestAndSave(AJadeboundProgressionActor& Actor)
-    { return Actor.FinishTransaction(Actor.Core->AcceptQuest(), FText::GetEmpty()); }
-    static bool RecoverQuestParcelAndSave(AJadeboundProgressionActor& Actor)
-    {
-        // Trusted fixture progression only. Never save or present outstanding loot.
-        if (!Actor.PendingDrops.IsEmpty() || !Actor.Core->GetSnapshot().UnprocessedDropIds.empty()) return false;
-        const auto Defeat = Actor.Core->RecordRaiderDefeat(1);
-        if (!Defeat.Succeeded() || !Defeat.Changed) return false;
-        const auto Pickup = Actor.Core->PickupParcel(1);
-        if (!Pickup.Succeeded() || !Pickup.Changed || !Actor.Core->GetSnapshot().UnprocessedDropIds.empty()) return false;
-        return Actor.FinishTransaction(Pickup, FText::GetEmpty());
-    }
-    static bool TurnInQuestAndSave(AJadeboundProgressionActor& Actor, Jadebound::Result& Result)
-    {
-        Result = Actor.Core->TurnInQuest();
-        return Actor.FinishTransaction(Result, FText::GetEmpty());
-    }
-    static bool IssuePendingLootAndSave(AJadeboundProgressionActor& Actor, const FVector& Location, Jadebound::Result& Result)
-    {
-        // Synthetic pair fixture only; no enemy/death/provider or public award API.
-        Result = {Jadebound::ResultCode::InvalidSnapshot, Jadebound::ValidationCode::None, false, Actor.State.ExactRevision};
-        if (!Actor.HasAuthority() || !Actor.HasDevelopmentContext() || !Actor.DevelopmentWriterLease || !Actor.Core ||
-            !Actor.GetWorld() || Actor.GetWorld()->bIsTearingDown || Actor.IsActorBeingDestroyed() || Actor.bPersistenceEndingPlay ||
-            !Actor.LastCommittedSave || Actor.bPersistenceBlocked || Actor.bUnsavedCandidate || Actor.HeldSaveCandidate) return false;
-        Jadebound::Recipient::IssueCandidate Candidate;
-        Result = Jadebound::Recipient::BuildIssue(Actor.Core->GetSnapshot(), Actor.PendingDrops, Location, Candidate);
-        if (!Result.Succeeded() || !Result.Changed) return false;
-        const auto Adopted = Actor.Core->LoadSnapshot(Candidate.State);
-        if (!Adopted.Succeeded()) { Result = Adopted; return false; }
-        Actor.PendingDrops = MoveTemp(Candidate.Drops);
-        return Actor.FinishTransaction(Result, FText::GetEmpty());
-    }
-    static bool PickupPendingLootAndSave(AJadeboundProgressionActor& Actor, int64 Id, Jadebound::Result& Result)
-    {
-        // Actual domain claim/removal/save, without public range/possession admission.
-        Result = {Jadebound::ResultCode::InvalidSnapshot, Jadebound::ValidationCode::None, false, Actor.State.ExactRevision};
-        if (!Actor.HasAuthority() || !Actor.HasDevelopmentContext() || !Actor.DevelopmentWriterLease || !Actor.Core ||
-            !Actor.GetWorld() || Actor.GetWorld()->bIsTearingDown || Actor.IsActorBeingDestroyed() || Actor.bPersistenceEndingPlay ||
-            !Actor.LastCommittedSave || Actor.bPersistenceBlocked || Actor.bUnsavedCandidate || Actor.HeldSaveCandidate ||
-            !Jadebound::Persistence::ValidateDropsV2(Actor.Core->GetSnapshot(), Actor.PendingDrops)) return false;
-        const int32 Index = Actor.PendingDrops.IndexOfByPredicate([Id](const FJadeboundSavedDrop& Drop) { return Drop.DropId == Id; });
-        if (Index == INDEX_NONE) return false;
-        const auto Drop = Actor.PendingDrops[Index];
-        Result = Drop.ItemId == 5 ? Actor.Core->PickupParcel(static_cast<uint64>(Id)) :
-            Actor.Core->GrantLoot(static_cast<Jadebound::ItemId>(Drop.ItemId), Drop.Count, static_cast<uint64>(Id));
-        if (Result.Succeeded()) Actor.PendingDrops.RemoveAt(Index);
-        return Actor.FinishTransaction(Result, FText::GetEmpty());
-    }
-    static bool ReplayConsumedClaimAndSave(AJadeboundProgressionActor& Actor, int64 Id, bool bParcel, Jadebound::Result& Result)
-    {
-        // Only a known already-issued/processed fixture claim may reach this probe.
-        Result = {Jadebound::ResultCode::InvalidSnapshot, Jadebound::ValidationCode::None, false, Actor.State.ExactRevision};
-        if (!Actor.Core || Id <= 0 || !Jadebound::Persistence::ValidateDropsV2(Actor.Core->GetSnapshot(), Actor.PendingDrops)) return false;
-        const auto& Before = Actor.Core->GetSnapshot();
-        if (static_cast<uint64>(Id) >= Before.NextDropId ||
-            Actor.PendingDrops.ContainsByPredicate([Id](const FJadeboundSavedDrop& Drop) { return Drop.DropId == Id; })) return false;
-        Result = bParcel ? Actor.Core->PickupParcel(static_cast<uint64>(Id)) :
-            Actor.Core->GrantLoot(Jadebound::ItemId::IronOre, 2, static_cast<uint64>(Id));
-        return Actor.FinishTransaction(Result, FText::GetEmpty());
-    }
-    static void SetLocalFixtureFutureDeadline(AJadeboundProgressionActor& Actor)
-    {
-        // Controlled fixture guard only; not unaltered or elapsed production timing.
-        Actor.PersistenceRetryAt = FPlatformTime::Seconds() + 60.0;
-    }
-    static const TArray<FJadeboundSavedDrop>& Drops(const AJadeboundProgressionActor& Actor) { return Actor.PendingDrops; }
-    static Jadebound::Snapshot CoreState(const AJadeboundProgressionActor& Actor) { return Actor.Core->GetSnapshot(); }
-    static const UJadeboundCharacterSave* Held(const AJadeboundProgressionActor& Actor) { return Actor.HeldSaveCandidate.Get(); }
-    static const UJadeboundCharacterSave* Committed(const AJadeboundProgressionActor& Actor) { return Actor.LastCommittedSave.Get(); }
-    static int32 Slot(const AJadeboundProgressionActor& Actor) { return Actor.LastSaveSlot; }
-    static bool IsHeld(const AJadeboundProgressionActor& Actor)
-    { return Actor.bUnsavedCandidate && Actor.bPersistenceBlocked && Actor.HeldSaveCandidate != nullptr; }
-    static bool MigrationUnready(const AJadeboundProgressionActor& Actor)
-    { return !Actor.bReady && !Actor.bServerModelInitialized; }
-    static double Deadline(const AJadeboundProgressionActor& Actor) { return Actor.PersistenceRetryAt; }
-    static bool Retry(AJadeboundProgressionActor& Actor) { return Actor.RetryHeldSave(false); }
-    static void ExpireLocalFixtureDeadline(AJadeboundProgressionActor& Actor)
-    {
-        // Fixture setup only, after testing the unaltered immediate refusal.
-        // Candidate/commit behavior follows; no elapsed backoff timing claim.
-        Actor.PersistenceRetryAt = FPlatformTime::Seconds() - 1.0;
-    }
-    static bool EncodeSyntheticFixture(UJadeboundCharacterSave* Save, TArray<uint8>& Bytes)
-    { return AJadeboundProgressionActor::EncodeJournalForAutomation(Save, Bytes); }
-    static void End(AJadeboundProgressionActor& Actor, bool bDestroyActor = true)
-    {
-        Actor.bPersistenceEndingPlay = true; // Before lease release or world teardown.
-        Actor.AutomationJournalOpener = nullptr;
-        Actor.DevelopmentWriterLease.Reset();
-        if (bDestroyActor) Actor.Destroy();
-    }
-};
-
-namespace JadeboundActorBanks
-{
-bool SameCore(const Jadebound::Snapshot& A, const Jadebound::Snapshot& B)
-{
-    if (A.Version != B.Version || A.Revision != B.Revision || A.Coins != B.Coins ||
-        A.EquippedWeapon != B.EquippedWeapon || A.Quest != B.Quest || A.NextDropId != B.NextDropId ||
-        A.QuestKillDropId != B.QuestKillDropId || A.UnprocessedDropIds != B.UnprocessedDropIds) return false;
-    for (uint32 Index = 0; Index < Jadebound::InventorySlotCount; ++Index)
-        if (A.Inventory[Index].Id != B.Inventory[Index].Id || A.Inventory[Index].Count != B.Inventory[Index].Count) return false;
-    return true;
-}
-bool SameReflected(const FJadeboundProgressionState& A, const FJadeboundProgressionState& B)
-{ return FJadeboundProgressionState::StaticStruct()->CompareScriptStruct(&A, &B, 0); }
-bool SameDrops(const TArray<FJadeboundSavedDrop>& A, const TArray<FJadeboundSavedDrop>& B)
-{
-    if (A.Num() != B.Num()) return false;
-    for (int32 Index = 0; Index < A.Num(); ++Index)
-        if (!FJadeboundSavedDrop::StaticStruct()->CompareScriptStruct(&A[Index], &B[Index], 0)) return false;
-    return true;
-}
-bool ReadOwned(const FString& Path, TArray<uint8>& Bytes)
-{
-    IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-    const int64 Size = Files.FileSize(*Path);
-    if (Size <= 0 || Size > 1024 * 1024 + 32) return false;
-    TUniquePtr<IFileHandle> Handle(Files.OpenRead(*Path));
-    if (!Handle) return false;
-    Bytes.SetNumUninitialized(static_cast<int32>(Size));
-    return Handle->Read(Bytes.GetData(), Size);
-}
-bool WriteOwned(const FString& Path, const TArray<uint8>& Bytes)
-{
-    TUniquePtr<IFileHandle> Handle(FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*Path, false, false));
-    const bool bSaved = Handle && Jadebound::Persistence::WriteAndFlush(*Handle, Bytes);
-    Handle.Reset();
-    return bSaved;
-}
-bool IsIsolatedUserDir(FString& Out)
-{
-    FString Argument;
-    const bool bForwardGuard = FParse::Param(FCommandLine::Get(), TEXT("JadeboundGuardedV2AdmissionTests"));
-    if ((!bForwardGuard && !FParse::Param(FCommandLine::Get(), TEXT("JadeboundActorBankTests"))) ||
-        !FParse::Value(FCommandLine::Get(), TEXT("UserDir="), Argument) ||
-        Argument.IsEmpty() || FPaths::IsRelative(Argument)) return false;
-    Argument.ReplaceInline(TEXT("\\"), TEXT("/"));
-    TArray<FString> Parts;
-    Argument.ParseIntoArray(Parts, TEXT("/"), true);
-    for (const auto& Part : Parts) if (Part == TEXT(".") || Part == TEXT("..")) return false;
-    FPaths::NormalizeDirectoryName(Argument);
-    FString Effective = FPaths::ProjectUserDir();
-    FPaths::NormalizeDirectoryName(Effective);
-    const FString Parent = FPaths::GetCleanFilename(FPaths::GetPath(Argument));
-    const FString Prefix(bForwardGuard ? TEXT("Jadebound-S118-A") : TEXT("Jadebound-P102-A"));
-    const FString Attempt = Parent.Mid(Prefix.Len());
-    if (!FPaths::IsSamePath(Argument, Effective) || FPaths::GetCleanFilename(Argument) != TEXT("UserDir-v001") ||
-        !Parent.StartsWith(Prefix, ESearchCase::CaseSensitive) || Attempt.Len() != 3) return false;
-    for (TCHAR Ch : Attempt) if (Ch < TEXT('0') || Ch > TEXT('9')) return false;
-    if (Attempt == TEXT("000")) return false;
-    Out = Argument;
-    return FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()), Out);
-}
-
-// All files are fresh GUID children of the explicit test UserDir. Nothing is
-// deleted, seeded into another profile, or installed as a global filesystem.
-struct FScope
-{
-    FAutomationTestBase& Test;
-    FString Id, Directory, Paths[2][2]; // [v1/v2][A/B]
-    UWorld* World = nullptr;
-    TArray<AJadeboundProgressionActor*> Actors;
-    bool bValid = false;
-    FScope(FAutomationTestBase& InTest, const TCHAR* Case) : Test(InTest)
-    {
-        FString UserDir;
-        if (!IsInGameThread() || !GEngine || !GEngine->WorldSettingsClass)
-        { Test.AddError(TEXT("Initialized game-thread engine/world settings required.")); return; }
-        if (!IsIsolatedUserDir(UserDir)) { Test.AddError(TEXT("Actor-bank test requires explicit opt-in and a fresh scoped UserDir.")); return; }
-        Id = FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower();
-        if (!Jadebound::Development::IsCharacterId(Id)) { Test.AddError(TEXT("Canonical test identity failed.")); return; }
-        for (int32 Version = 0; Version < 2; ++Version)
-            for (int32 Bank = 0; Bank < 2; ++Bank)
-                if (!Jadebound::Persistence::TryJournalPath(true, Id, Bank, Version == 1, Paths[Version][Bank]) ||
-                    !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Paths[Version][Bank]), UserDir))
-                { Test.AddError(TEXT("Production journal path escaped isolated UserDir.")); return; }
-        Directory = FPaths::GetPath(Paths[1][0]);
-        IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-        if (Files.DirectoryExists(*Directory) || !Files.CreateDirectoryTree(*Directory))
-        { Test.AddError(TEXT("Fresh owned GUID directory required; no reset/replay.")); return; }
-        UWorld::InitializationValues Values;
-        Values.InitializeScenes(false).AllowAudioPlayback(false).RequiresHitProxies(false).CreatePhysicsScene(false)
-            .CreateNavigation(false).CreateAISystem(false).ShouldSimulatePhysics(false).CreateFXSystem(false).SetTransactional(false);
-        World = UWorld::CreateWorld(EWorldType::Game, false, FName(*FString::Printf(TEXT("ActorBank_%s"), *Id)),
-            nullptr, true, ERHIFeatureLevel::Num, &Values);
-        if (World) GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
-        bValid = World && GEngine->GetWorldContextFromWorld(World) && !World->HasBegunPlay() &&
-            !World->bIsTearingDown && World->GetNetMode() == NM_Standalone;
-        if (!bValid) Test.AddError(TEXT("Minimal non-BeginPlay authority world unavailable."));
-        Test.AddInfo(FString::Printf(TEXT("SYNTHETIC actor-bank %s evidence retained: %s"), Case, *Directory));
-    }
-    ~FScope()
-    {
-        if (!World) return;
-        UEngine* Engine = GEngine;
-        const bool bCanDestroy = Engine && Engine->GetWorldContextFromWorld(World);
-        for (auto* Actor : Actors)
-            if (IsValid(Actor) && !Actor->IsActorBeingDestroyed())
-                FJadeboundActorBankTestAccess::End(*Actor, bCanDestroy);
-        if (!bCanDestroy)
-        {
-            Test.AddError(TEXT("Actor-bank teardown lost engine/world context; leases released, world/context retained."));
-            return;
-        }
-        World->DestroyWorld(false);
-        Engine->DestroyWorldContext(World);
-        World = nullptr;
-    }
-    AJadeboundProgressionActor* NewActor()
-    {
-        if (!bValid) return nullptr;
-        TUniquePtr<IFileHandle> Lease(FPlatformFileManager::Get().GetPlatformFile().OpenWrite(
-            *FPaths::Combine(Directory, TEXT("Character.writer")), true, false));
-        if (!Lease) { Test.AddError(TEXT("Exclusive real Character.writer lease unavailable.")); return nullptr; }
-        FActorSpawnParameters Spawn;
-        Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        auto* Actor = World->SpawnActor<AJadeboundProgressionActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-        if (!Actor || !Actor->HasAuthority() || Actor->GetWorld() != World || Actor->GetNetMode() != NM_Standalone || Actor->HasActorBegunPlay())
-        { Test.AddError(TEXT("Native non-BeginPlay authority actor unavailable.")); return nullptr; }
-        Actors.Add(Actor);
-        FJadeboundActorBankTestAccess::SetIdentity(*Actor, Id, MoveTemp(Lease));
-        return Actor;
-    }
-    void Retire(AJadeboundProgressionActor& Actor) { FJadeboundActorBankTestAccess::End(Actor); }
-    bool Put(int32 Version, int32 Bank, const TArray<uint8>& Bytes)
-    { return Version >= 0 && Version < 2 && Bank >= 0 && Bank < 2 && WriteOwned(Paths[Version][Bank], Bytes); }
-};
-
-enum class EFault { Open, PartialWrite, UncertainFlush, CorruptAfterClose, DifferentValidAfterClose, None };
-struct FTrace
-{
-    EFault Fault = EFault::None;
-    FString ExpectedPath;
-    TArray<uint8> Payload, Substitute;
-    TArray<FString> Events;
-    int32 Opens = 0, Writes = 0, Flushes = 0, Closes = 0;
-    bool bFullFlush = false, bRealFlushSucceeded = false, bRealWriteSucceeded = false, bMutationSucceeded = true, bPathRefused = false;
-};
-class FForwardHandle final : public IFileHandle
-{
-    TUniquePtr<IFileHandle> Inner;
-    FTrace& Trace;
-    FString Path;
-public:
-    FForwardHandle(IFileHandle* InHandle, FTrace& InTrace, const FString& InPath) : Inner(InHandle), Trace(InTrace), Path(InPath) {}
-    ~FForwardHandle() override
-    {
-        Inner.Reset(); // Destroy owned native handle before mutation; no OS close-result audit.
-        ++Trace.Closes;
-        Trace.Events.Add(TEXT("close"));
-        if (Trace.Fault == EFault::CorruptAfterClose || Trace.Fault == EFault::DifferentValidAfterClose)
-        {
-            const TArray<uint8> Corrupt = {0x4a, 0x42, 0x50};
-            Trace.bMutationSucceeded = FPaths::IsSamePath(Path, Trace.ExpectedPath) &&
-                WriteOwned(Path, Trace.Fault == EFault::CorruptAfterClose ? Corrupt : Trace.Substitute);
-            Trace.Events.Add(TEXT("owned-after-close-mutation"));
-        }
-    }
-    int64 Tell() override { return Inner->Tell(); }
-    bool Seek(int64 Position) override { return Inner->Seek(Position); }
-    bool SeekFromEnd(int64 Position = 0) override { return Inner->SeekFromEnd(Position); }
-    bool Read(uint8* Out, int64 Count) override { return Inner->Read(Out, Count); }
-    bool ReadAt(uint8* Out, int64 Count, int64 Offset) override { return Inner->ReadAt(Out, Count, Offset); }
-    bool Truncate(int64 Size) override { return Inner->Truncate(Size); }
-    bool Write(const uint8* Data, int64 Count) override
-    {
-        ++Trace.Writes;
-        Trace.Events.Add(TEXT("write"));
-        if (!Data || Count <= 0 || Count > 1024 * 1024 + 32) return false;
-        Trace.Payload.Reset();
-        Trace.Payload.Append(Data, static_cast<int32>(Count));
-        Trace.bRealWriteSucceeded = Inner->Write(Data, Trace.Fault == EFault::PartialWrite ? FMath::Min<int64>(8, Count) : Count);
-        return Trace.bRealWriteSucceeded && Trace.Fault != EFault::PartialWrite;
-    }
-    bool Flush(const bool bFull = false) override
-    {
-        ++Trace.Flushes;
-        Trace.bFullFlush = bFull;
-        Trace.Events.Add(TEXT("flush"));
-        Trace.bRealFlushSucceeded = Inner->Flush(bFull);
-        return Trace.bRealFlushSucceeded && Trace.Fault != EFault::UncertainFlush;
-    }
-};
-void Install(AJadeboundProgressionActor& Actor, FTrace& Trace)
-{
-    FJadeboundActorBankTestAccess::SetOpener(Actor, [&Trace](const FString& Path) -> IFileHandle* {
-        ++Trace.Opens;
-        Trace.Events.Add(TEXT("open"));
-        if (!FPaths::IsSamePath(Path, Trace.ExpectedPath)) { Trace.bPathRefused = true; return nullptr; }
-        if (Trace.Fault == EFault::Open) return nullptr;
-        IFileHandle* Real = FPlatformFileManager::Get().GetPlatformFile().OpenWrite(*Path, false, false);
-        return Real ? new FForwardHandle(Real, Trace, Path) : nullptr;
-    });
-}
-bool MakeLegacyFixture(const FScope& Scope, const FJadeboundProgressionState& State, TArray<uint8>& Bytes)
-{
-    auto* Save = Cast<UJadeboundCharacterSave>(UGameplayStatics::CreateSaveGameObject(UJadeboundCharacterSave::StaticClass()));
-    if (!Save) return false;
-    Save->CharacterId = Scope.Id;
-    Save->State = State;
-    Save->State.Version = 1;
-    Save->State.UnprocessedDropIds.Reset();
-    JadeboundLegacyV1::Snapshot Legacy;
-    return Jadebound::Persistence::DecodeStateV1(Save->State, Legacy) &&
-        Jadebound::Persistence::ValidateDropsV1(Legacy, Save->PendingDrops) &&
-        FJadeboundActorBankTestAccess::EncodeSyntheticFixture(Save, Bytes);
-}
-}
+#include "Tests/Source155ActorBankFixture.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJadeboundActorJournalFaultRetryTest, "Jadebound.Persistence.ActorJournalFaultRetry",
     EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
@@ -360,26 +12,45 @@ bool FJadeboundActorJournalFaultRetryTest::RunTest(const FString& Parameters)
     if (!IsInGameThread()) { AddError(TEXT("Actor-bank tests require the game thread.")); return false; }
     const EFault Faults[] = {EFault::Open, EFault::PartialWrite, EFault::UncertainFlush,
         EFault::CorruptAfterClose, EFault::DifferentValidAfterClose};
+    Jadebound::Snapshot ComparatorA, ComparatorB;
+    ComparatorB.EquippedTorso = Jadebound::ItemId::WardenCoat;
+    TestFalse(TEXT("Complete current-state comparison detects a torso-only difference"), SameCore(ComparatorA, ComparatorB));
     for (const auto Fault : Faults)
+    for (const bool bSyntheticTorso : {false, true})
     {
-        FScope Scope(*this, TEXT("write-fault-held-retry"));
+        FScope Scope(*this, bSyntheticTorso ? TEXT("synthetic-torso-write-fault-held-retry") : TEXT("write-fault-held-retry"));
+        if (!Scope.bValid) return false;
+        Jadebound::Snapshot Before;
+        if (bSyntheticTorso)
+        {
+            Before.EquippedTorso = Jadebound::ItemId::WardenCoat;
+            TArray<uint8> Seed;
+            if (!MakeV3Fixture(Scope, Before, Seed) || !Scope.PutV3(0, Seed)) return false;
+        }
+        auto KnownPurchase = Before;
+        KnownPurchase.Revision = 1; KnownPurchase.Coins = 8;
+        KnownPurchase.Inventory[0] = {Jadebound::ItemId::Moonleaf, 1};
         auto* Actor = Scope.NewActor();
         if (!Actor || !Access::Read(*Actor)) return false;
         TArray<uint8> OldA;
-        if (!ReadOwned(Scope.Paths[1][0], OldA)) return false;
+        if (!ReadOwned(Scope.V3Path(0), OldA)) return false;
         const auto* OldCommitted = Access::Committed(*Actor);
         if (!OldCommitted) return false;
         const auto OldCommittedState = OldCommitted->State;
         const auto OldCommittedDrops = OldCommitted->PendingDrops;
         FTrace Trace;
-        Trace.Fault = Fault; Trace.ExpectedPath = Scope.Paths[1][1]; Trace.Substitute = OldA;
+        Trace.Fault = Fault; Trace.ExpectedPath = Scope.V3Path(1); Trace.Substitute = OldA;
         Install(*Actor, Trace);
         TestFalse(TEXT("Actual save rejects the injected OS-facing fault"), Access::BuyMoonleafOnce(*Actor));
         // Test the production deadline before modifying any timing field.
         TestTrue(TEXT("Production backoff deadline lies in the future"), Access::Deadline(*Actor) > FPlatformTime::Seconds());
         TestFalse(TEXT("Unaltered immediate retry is refused"), Access::Retry(*Actor));
         TestEqual(TEXT("Immediate retry did not open again"), Trace.Opens, 1);
+        const auto FirstCache = Access::HeldBytes(*Actor);
+        TestTrue(TEXT("First complete encoding and current destination survive even a refused open"),
+            CacheMatches(*Actor, FirstCache, Scope.V3Path(1), 1));
         const auto ExpectedCore = Access::CoreState(*Actor);
+        TestTrue(TEXT("Whole independently known purchase preserves synthetic torso when present"), SameCore(KnownPurchase, ExpectedCore));
         const auto ExpectedState = Actor->GetProgressionState();
         TestTrue(TEXT("Exactly one trusted purchase changed the complete fixture"), ExpectedCore.Revision == 1 && ExpectedCore.Coins == 8 &&
             ExpectedCore.Inventory[0].Id == Jadebound::ItemId::Moonleaf && ExpectedCore.Inventory[0].Count == 1 && ExpectedCore.UnprocessedDropIds.empty());
@@ -391,7 +62,7 @@ bool FJadeboundActorJournalFaultRetryTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Old complete commit and slot unchanged"), Access::Committed(*Actor) == OldCommitted && Access::Slot(*Actor) == 0 &&
             SameReflected(OldCommittedState, OldCommitted->State) && SameDrops(OldCommittedDrops, OldCommitted->PendingDrops));
         TArray<uint8> CurrentA;
-        TestTrue(TEXT("Old A bytes survive uncertainty"), ReadOwned(Scope.Paths[1][0], CurrentA) && CurrentA == OldA);
+        TestTrue(TEXT("Old A bytes survive uncertainty"), ReadOwned(Scope.V3Path(0), CurrentA) && CurrentA == OldA);
         TestTrue(TEXT("Owned handle destruction completed or open was refused"), Trace.Closes == (Fault == EFault::Open ? 0 : 1));
         TestTrue(TEXT("Write refusal skips flush; other opened cases request real full flush"),
             Trace.Flushes == (Fault == EFault::Open || Fault == EFault::PartialWrite ? 0 : 1) &&
@@ -406,6 +77,13 @@ bool FJadeboundActorJournalFaultRetryTest::RunTest(const FString& Parameters)
         if (Fault == EFault::Open)
             TestFalse(TEXT("Refused open created no target bank"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Trace.ExpectedPath));
         const auto FirstPayload = Trace.Payload;
+        TestTrue(TEXT("Actual first write received the cached buffer when opening succeeded"),
+            Fault == EFault::Open || FirstPayload == FirstCache);
+        TestTrue(TEXT("Held state refuses read and second fixture mutation without altering cached wire"),
+            !Access::Read(*Actor, false) && !Access::BuyMoonleafOnce(*Actor) && Trace.Opens == 1 &&
+            Access::Held(*Actor) == Held && SameCore(ExpectedCore, Access::CoreState(*Actor)) &&
+            SameReflected(Held->State, ExpectedState) && SameDrops(Held->PendingDrops, ExpectedDrops) &&
+            CacheMatches(*Actor, FirstCache, Scope.V3Path(1), 1));
         // This changes only this test actor's deadline: candidate/commit test,
         // not an elapsed-backoff/scheduler qualification or production bypass.
         Access::ExpireLocalFixtureDeadline(*Actor);
@@ -415,9 +93,10 @@ bool FJadeboundActorJournalFaultRetryTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Retry never reruns the transaction"), SameCore(ExpectedCore, Access::CoreState(*Actor)) && SameReflected(ExpectedState, Actor->GetProgressionState()));
         TestTrue(TEXT("Committed complete candidate and drops match"), Access::Committed(*Actor) &&
             SameReflected(Access::Committed(*Actor)->State, ExpectedState) && SameDrops(Access::Committed(*Actor)->PendingDrops, ExpectedDrops));
-        TestTrue(TEXT("Retry reserialized the same payload when first attempt reached Write"), FirstPayload.IsEmpty() || FirstPayload == Trace.Payload);
+        TestTrue(TEXT("Retry reused the first cached payload including an initially refused open"), FirstCache == Trace.Payload && (FirstPayload.IsEmpty() || FirstPayload == Trace.Payload));
         TestTrue(TEXT("Readback alone clears the held candidate"), !Access::Held(*Actor) && !Access::IsHeld(*Actor) &&
             Actor->GetPersistencePresentation().FailureKind == EJadeboundPersistenceFailureKind::None && Access::Slot(*Actor) == 1);
+        TestTrue(TEXT("Verified commit clears cached destination and leaves both old pairs absent"), CacheCleared(*Actor) && Scope.OlderPairsAbsent());
         Scope.Retire(*Actor);
         auto* Reloaded = Scope.NewActor();
         if (!Reloaded) return false;
@@ -454,7 +133,7 @@ bool FJadeboundActorJournalReopenTest::RunTest(const FString& Parameters)
         FScope Scope(*this, TEXT("uncertain-written-bank-reopen"));
         auto* Actor = Scope.NewActor();
         if (!Actor || !Access::Read(*Actor)) return false;
-        FTrace Trace; Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.Paths[1][1];
+        FTrace Trace; Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.V3Path(1);
         Install(*Actor, Trace);
         TestFalse(TEXT("Reported flush failure holds live model"), Access::BuyMoonleafOnce(*Actor));
         const auto Expected = Access::CoreState(*Actor);
@@ -476,44 +155,71 @@ bool FJadeboundActorJournalRecoveryTest::RunTest(const FString& Parameters)
     using Access = FJadeboundActorBankTestAccess;
     if (!IsInGameThread()) { AddError(TEXT("Actor-bank tests require the game thread.")); return false; }
     {
-        FScope Scope(*this, TEXT("corrupt-higher-v2-recovery"));
+        FScope Scope(*this, TEXT("corrupt-higher-v3-recovery"));
         auto* Actor = Scope.NewActor();
         if (!Actor || !Access::Read(*Actor)) return false;
         const auto Lower = Access::CoreState(*Actor);
         if (!Access::BuyMoonleafOnce(*Actor)) return false;
         Scope.Retire(*Actor);
         const TArray<uint8> Corrupt = {1, 2, 3};
-        if (!Scope.Put(1, 1, Corrupt)) return false;
+        if (!Scope.PutV3(1, Corrupt)) return false;
         auto* Reloaded = Scope.NewActor();
         if (!Reloaded) return false;
-        TestTrue(TEXT("Actual reader falls back to valid lower v2"), Access::Read(*Reloaded) && SameCore(Lower, Access::CoreState(*Reloaded)) && Access::Slot(*Reloaded) == 0);
+        TestTrue(TEXT("Actual reader falls back to valid lower v3"), Access::Read(*Reloaded) && SameCore(Lower, Access::CoreState(*Reloaded)) && Access::Slot(*Reloaded) == 0);
         TArray<uint8> After;
-        TestTrue(TEXT("Invalid bank retained as evidence"), ReadOwned(Scope.Paths[1][1], After) && After == Corrupt);
+        TestTrue(TEXT("Invalid bank retained as evidence"), ReadOwned(Scope.V3Path(1), After) && After == Corrupt);
     }
     {
         FScope Scope(*this, TEXT("malformed-v2-refuses-legacy"));
-        auto* Fixture = Scope.NewActor();
-        if (!Fixture || !Access::Read(*Fixture)) return false;
+        if (!Scope.bValid) return false;
         TArray<uint8> Legacy;
-        if (!MakeLegacyFixture(Scope, Fixture->GetProgressionState(), Legacy)) return false;
-        Scope.Retire(*Fixture);
+        FJadeboundProgressionState LegacyState;
+        if (!MakeV1Fixture(Scope, JadeboundLegacyV1::Snapshot{}, Legacy, LegacyState)) return false;
         const TArray<uint8> Corrupt = {1, 2, 3};
-        if (!Scope.Put(0, 0, Legacy) || !Scope.Put(0, 1, Legacy) || !Scope.Put(1, 0, Corrupt)) return false;
+        if (!Scope.PutV1(0, Legacy) || !Scope.PutV1(1, Legacy) || !Scope.PutV2(0, Corrupt)) return false;
         auto* Reloaded = Scope.NewActor();
         if (!Reloaded) return false;
         TestFalse(TEXT("Any existing malformed v2 forbids valid legacy fallback"), Access::Read(*Reloaded));
         TestTrue(TEXT("Format boundary holds RecoveryRequired"), Reloaded->GetPersistencePresentation().FailureKind == EJadeboundPersistenceFailureKind::RecoveryRequired);
         TArray<uint8> A, B, V2;
-        TestTrue(TEXT("Both originals and v2 partial are untouched"), ReadOwned(Scope.Paths[0][0], A) && A == Legacy &&
-            ReadOwned(Scope.Paths[0][1], B) && B == Legacy && ReadOwned(Scope.Paths[1][0], V2) && V2 == Corrupt);
-        TestFalse(TEXT("No replacement v2 B created"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.Paths[1][1]));
+        TestTrue(TEXT("Both originals and v2 partial are untouched"), ReadOwned(Scope.V1Path(0), A) && A == Legacy &&
+            ReadOwned(Scope.V1Path(1), B) && B == Legacy && ReadOwned(Scope.V2Path(0), V2) && V2 == Corrupt);
+        TestFalse(TEXT("No replacement v2 B created"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.V2Path(1)));
+        TestTrue(TEXT("Refused historical namespace creates no V3 destination"),
+            !Jadebound::Persistence::HasJournalEntry(FPlatformFileManager::Get().GetPlatformFile(), Scope.V3Path(0)) &&
+            !Jadebound::Persistence::HasJournalEntry(FPlatformFileManager::Get().GetPlatformFile(), Scope.V3Path(1)));
+    }
+    {
+        FScope Scope(*this, TEXT("malformed-v3-refuses-both-old-pairs"));
+        if (!Scope.bValid) return false;
+        TArray<uint8> V1, V2;
+        FJadeboundProgressionState One, Two;
+        if (!MakeV1Fixture(Scope, JadeboundLegacyV1::Snapshot{}, V1, One) ||
+            !MakeV2Fixture(Scope, JadeboundLegacyV2::Snapshot{}, V2, Two)) return false;
+        const TArray<uint8> Corrupt = {1, 2, 3};
+        if (!Scope.PutV1(0, V1) || !Scope.PutV1(1, V1) || !Scope.PutV2(0, V2) || !Scope.PutV2(1, V2) || !Scope.PutV3(0, Corrupt)) return false;
+        auto* Actor = Scope.NewActor(); if (!Actor) return false;
+        int32 Opens = 0;
+        Access::SetOpener(*Actor, [&Opens](const FString&) -> IFileHandle* { ++Opens; return nullptr; });
+        TestTrue(TEXT("Malformed current V3 refuses before old history adoption or any write"),
+            !Access::Read(*Actor) && !Access::Admitted(*Actor) && !Access::Committed(*Actor) && !Access::Held(*Actor) && Opens == 0 &&
+            SameCore(Jadebound::Snapshot{}, Access::CoreState(*Actor)) &&
+            Actor->GetPersistencePresentation().FailureKind == EJadeboundPersistenceFailureKind::RecoveryRequired);
+        TArray<uint8> A, B;
+        for (int32 Bank = 0; Bank < 2; ++Bank)
+            TestTrue(TEXT("Both actual historical pairs survive current-format refusal"),
+                ReadOwned(Scope.V1Path(Bank), A) && A == V1 && ReadOwned(Scope.V2Path(Bank), B) && B == V2);
+        TestTrue(TEXT("Malformed V3 evidence remains and no replacement B is created"),
+            ReadOwned(Scope.V3Path(0), A) && A == Corrupt &&
+            !Jadebound::Persistence::HasJournalEntry(FPlatformFileManager::Get().GetPlatformFile(), Scope.V3Path(1)));
+        Access::SetOpener(*Actor, nullptr);
     }
     {
         FScope Scope(*this, TEXT("equal-revision-original-byte-conflict"));
         auto* Fixture = Scope.NewActor();
         if (!Fixture || !Access::Read(*Fixture)) return false;
         TArray<uint8> A;
-        if (!ReadOwned(Scope.Paths[1][0], A)) return false;
+        if (!ReadOwned(Scope.V3Path(0), A)) return false;
         auto* Other = Cast<UJadeboundCharacterSave>(UGameplayStatics::CreateSaveGameObject(UJadeboundCharacterSave::StaticClass()));
         if (!Other) return false;
         Other->CharacterId = Scope.Id;
@@ -521,24 +227,24 @@ bool FJadeboundActorJournalRecoveryTest::RunTest(const FString& Parameters)
         Other->State.Coins = 9; // Synthetic valid equal-revision fixture; not earned progression.
         Jadebound::Snapshot Valid;
         TArray<uint8> B;
-        if (!Jadebound::Persistence::DecodeStateV2(Other->State, Valid) || !Access::EncodeSyntheticFixture(Other, B) || A == B) return false;
+        if (!Jadebound::Persistence::DecodeStateV3(Other->State, Valid) || !Access::EncodeSyntheticFixture(Other, B) || A == B) return false;
         Scope.Retire(*Fixture);
-        if (!Scope.Put(1, 1, B)) return false;
+        if (!Scope.PutV3(1, B)) return false;
         auto* Conflicted = Scope.NewActor();
         if (!Conflicted) return false;
         TestFalse(TEXT("Equal revision with different original bytes holds"), Access::Read(*Conflicted));
         TestTrue(TEXT("Conflict requests recovery"), Conflicted->GetPersistencePresentation().FailureKind == EJadeboundPersistenceFailureKind::RecoveryRequired);
         TArray<uint8> AfterA, AfterB;
-        TestTrue(TEXT("Conflict preserves both actual streams"), ReadOwned(Scope.Paths[1][0], AfterA) && A == AfterA && ReadOwned(Scope.Paths[1][1], AfterB) && B == AfterB);
+        TestTrue(TEXT("Conflict preserves both actual streams"), ReadOwned(Scope.V3Path(0), AfterA) && A == AfterA && ReadOwned(Scope.V3Path(1), AfterB) && B == AfterB);
     }
     {
         FScope Scope(*this, TEXT("identical-equal-revision-streams"));
         auto* Fixture = Scope.NewActor();
         if (!Fixture || !Access::Read(*Fixture)) return false;
         TArray<uint8> A;
-        if (!ReadOwned(Scope.Paths[1][0], A)) return false;
+        if (!ReadOwned(Scope.V3Path(0), A)) return false;
         Scope.Retire(*Fixture);
-        if (!Scope.Put(1, 1, A)) return false;
+        if (!Scope.PutV3(1, A)) return false;
         auto* Identical = Scope.NewActor();
         if (!Identical) return false;
         TestTrue(TEXT("Identical equal-revision streams are accepted"), Access::Read(*Identical));
@@ -554,25 +260,36 @@ bool FJadeboundActorJournalMigrationTest::RunTest(const FString& Parameters)
     using namespace JadeboundActorBanks;
     using Access = FJadeboundActorBankTestAccess;
     if (!IsInGameThread()) { AddError(TEXT("Actor-bank tests require the game thread.")); return false; }
+    for (const int32 OriginalVersion : {1, 2})
     {
-        FScope Scope(*this, TEXT("synthetic-v1-migration-held-retry"));
-        // CreateSaveGameObject + actual production envelope, not an old archive claim.
-        FJadeboundProgressionState LegacyState;
-        Jadebound::ProgressionCore LegacySetup;
-        if (!LegacySetup.Buy(Jadebound::ItemId::Moonleaf, 1).Succeeded() ||
-            !Jadebound::Persistence::EncodeStateV2(LegacySetup.GetSnapshot(), LegacyState)) return false;
-        auto ExpectedLegacyState = LegacyState;
-        ExpectedLegacyState.Version = 1;
-        auto Expected = LegacySetup.GetSnapshot(); // Oracle from known input, not migrated output.
-        Expected.Version = Jadebound::SnapshotVersion;
-        ++Expected.Revision; // Only the representation transaction may change.
-        FJadeboundProgressionState ExpectedState;
-        if (!Jadebound::Persistence::EncodeStateV2(Expected, ExpectedState)) return false;
+        FScope Scope(*this, OriginalVersion == 1 ? TEXT("synthetic-v1-migration-held-retry") : TEXT("synthetic-v2-migration-held-retry"));
+        if (!Scope.bValid) return false;
+        // Explicit frozen producer, current class/envelope; not an old archive claim.
         TArray<uint8> Legacy;
-        if (!MakeLegacyFixture(Scope, LegacyState, Legacy) || !Scope.Put(0, 0, Legacy) || !Scope.Put(0, 1, Legacy)) return false;
+        FJadeboundProgressionState ExpectedLegacyState;
+        if (OriginalVersion == 1)
+        {
+            JadeboundLegacyV1::ProgressionCore Setup;
+            if (!Setup.Buy(JadeboundLegacyV1::ItemId::Moonleaf, 1).Succeeded() ||
+                !MakeV1Fixture(Scope, Setup.GetSnapshot(), Legacy, ExpectedLegacyState) ||
+                !Scope.PutV1(0, Legacy) || !Scope.PutV1(1, Legacy)) return false;
+        }
+        else
+        {
+            JadeboundLegacyV2::ProgressionCore Setup;
+            if (!Setup.Buy(JadeboundLegacyV2::ItemId::Moonleaf, 1).Succeeded() ||
+                !MakeV2Fixture(Scope, Setup.GetSnapshot(), Legacy, ExpectedLegacyState) ||
+                !Scope.PutV2(0, Legacy) || !Scope.PutV2(1, Legacy)) return false;
+        }
+        // Independent known fixture oracle: original r1 purchase plus ONE representation revision.
+        Jadebound::Snapshot Expected;
+        Expected.Revision = 2; Expected.Coins = 8;
+        Expected.Inventory[0] = {Jadebound::ItemId::Moonleaf, 1};
+        FJadeboundProgressionState ExpectedState;
+        if (!Jadebound::Persistence::EncodeStateV3(Expected, ExpectedState)) return false;
         auto* Actor = Scope.NewActor();
         if (!Actor) return false;
-        FTrace Trace; Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.Paths[1][0];
+        FTrace Trace; Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.V3Path(0);
         Install(*Actor, Trace);
         TestFalse(TEXT("Actual migration remains held after uncertain flush"), Access::Read(*Actor));
         TestTrue(TEXT("Migration preserves every known input field except revision+1"), SameCore(Expected, Access::CoreState(*Actor)) && SameReflected(ExpectedState, Actor->GetProgressionState()));
@@ -580,12 +297,15 @@ bool FJadeboundActorJournalMigrationTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Migration does not award currency"), Expected.Coins, int64(8));
         TestTrue(TEXT("Migration candidate held with complete original still committed"), Access::IsHeld(*Actor) && Access::Committed(*Actor) &&
             Access::Committed(*Actor)->CharacterId == Scope.Id && SameReflected(Access::Committed(*Actor)->State, ExpectedLegacyState) && Access::Committed(*Actor)->PendingDrops.IsEmpty());
-        TestTrue(TEXT("Migration stays unready until v2 readback"), Access::MigrationUnready(*Actor));
+        TestTrue(TEXT("Migration stays unready until v3 readback"), Access::MigrationUnready(*Actor));
         const auto* Held = Access::Held(*Actor);
         if (!TestTrue(TEXT("Complete expected migration candidate held"), Held && Held->CharacterId == Scope.Id &&
             SameReflected(Held->State, ExpectedState) && Held->PendingDrops.IsEmpty())) return false;
         const auto HeldDrops = Held->PendingDrops;
         const auto FirstPayload = Trace.Payload;
+        const auto FirstCache = Access::HeldBytes(*Actor);
+        TestTrue(TEXT("Migration caches the exact first V3 A image under the original witness"),
+            CacheMatches(*Actor, FirstCache, Scope.V3Path(0), 0) && FirstPayload == FirstCache);
         TestFalse(TEXT("Migration immediate retry respects original deadline"), Access::Retry(*Actor));
         TestEqual(TEXT("Migration immediate retry does not reopen"), Trace.Opens, 1);
         Access::ExpireLocalFixtureDeadline(*Actor);
@@ -596,11 +316,14 @@ bool FJadeboundActorJournalMigrationTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Migration retry uses identical attempted payload and commits whole state"), !FirstPayload.IsEmpty() && FirstPayload == Trace.Payload &&
             Access::Committed(*Actor) && SameReflected(Access::Committed(*Actor)->State, ExpectedState) && SameDrops(Access::Committed(*Actor)->PendingDrops, HeldDrops) && !Access::Held(*Actor));
         TArray<uint8> A, B;
-        TestTrue(TEXT("Both v1 streams survive migration and retry"), ReadOwned(Scope.Paths[0][0], A) && A == Legacy && ReadOwned(Scope.Paths[0][1], B) && B == Legacy);
+        const FString OriginalA = OriginalVersion == 1 ? Scope.V1Path(0) : Scope.V2Path(0);
+        const FString OriginalB = OriginalVersion == 1 ? Scope.V1Path(1) : Scope.V2Path(1);
+        TestTrue(TEXT("Both original streams survive migration and retry"), ReadOwned(OriginalA, A) && A == Legacy && ReadOwned(OriginalB, B) && B == Legacy);
+        TestTrue(TEXT("Verified migration clears the first cache and retains the identical attempted bytes"), CacheCleared(*Actor) && Trace.Payload == FirstCache);
         Scope.Retire(*Actor);
         auto* Reloaded = Scope.NewActor();
         if (!Reloaded) return false;
-        TestTrue(TEXT("New actor reopens the exact migrated v2 snapshot"), Access::Read(*Reloaded) && SameCore(Expected, Access::CoreState(*Reloaded)));
+        TestTrue(TEXT("New actor reopens the exact migrated v3 snapshot"), Access::Read(*Reloaded) && SameCore(Expected, Access::CoreState(*Reloaded)));
     }
     AddInfo(TEXT("Synthetic actor-bank files retained; no gameplay/network/power-loss/elapsed-scheduler/genuine-old-tag acceptance."));
     return true;
@@ -626,9 +349,9 @@ bool FJadeboundActorJournalQuestRewardTest::RunTest(const FString& Parameters)
     Completed.Revision = 4; Completed.Quest = Jadebound::QuestState::Completed;
     Completed.Coins = 15; Completed.Inventory[0] = {Jadebound::ItemId::JadeShard, 1};
     FJadeboundProgressionState AcceptedState, RecoveredState, CompletedState;
-    if (!Jadebound::Persistence::EncodeStateV2(Accepted, AcceptedState) ||
-        !Jadebound::Persistence::EncodeStateV2(Recovered, RecoveredState) ||
-        !Jadebound::Persistence::EncodeStateV2(Completed, CompletedState)) return false;
+    if (!Jadebound::Persistence::EncodeStateV3(Accepted, AcceptedState) ||
+        !Jadebound::Persistence::EncodeStateV3(Recovered, RecoveredState) ||
+        !Jadebound::Persistence::EncodeStateV3(Completed, CompletedState)) return false;
     const bool RetryModes[] = {true, false};
     for (const bool bRetryBeforeReopen : RetryModes)
     {
@@ -646,9 +369,9 @@ bool FJadeboundActorJournalQuestRewardTest::RunTest(const FString& Parameters)
         if (!OldCommitted || !TestTrue(TEXT("Real pre-reward commit is recovered and has no outstanding visual drops"),
             SameReflected(RecoveredState, OldCommitted->State) && OldCommitted->PendingDrops.IsEmpty())) return false;
         TArray<uint8> OldA;
-        if (!ReadOwned(Scope.Paths[1][0], OldA)) return false;
+        if (!ReadOwned(Scope.V3Path(0), OldA)) return false;
         FTrace Trace;
-        Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.Paths[1][1];
+        Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.V3Path(1);
         Install(*Actor, Trace);
         Jadebound::Result RewardResult;
         TestFalse(TEXT("Reward transaction is held when real flush is reported uncertain"), Access::TurnInQuestAndSave(*Actor, RewardResult));
@@ -668,10 +391,11 @@ bool FJadeboundActorJournalQuestRewardTest::RunTest(const FString& Parameters)
             Trace.Flushes == 1 && Trace.Closes == 1 && Trace.bFullFlush && Trace.bRealWriteSucceeded && Trace.bRealFlushSucceeded &&
             !Trace.bPathRefused && FString::Join(Trace.Events, TEXT("|")) == TEXT("open|write|flush|close"));
         const auto FirstPayload = Trace.Payload;
+        TestTrue(TEXT("Held reward uses the first cached B image"), CacheMatches(*Actor, FirstPayload, Scope.V3Path(1), 1));
         TArray<uint8> CurrentA, UncertainB;
         if (!TestTrue(TEXT("Old r3 A survives and uncertain B contains the full attempted reward bytes"),
-            ReadOwned(Scope.Paths[1][0], CurrentA) && CurrentA == OldA && !FirstPayload.IsEmpty() &&
-            ReadOwned(Scope.Paths[1][1], UncertainB) && UncertainB == FirstPayload)) return false;
+            ReadOwned(Scope.V3Path(0), CurrentA) && CurrentA == OldA && !FirstPayload.IsEmpty() &&
+            ReadOwned(Scope.V3Path(1), UncertainB) && UncertainB == FirstPayload)) return false;
         Jadebound::Result HeldRepeat;
         TestFalse(TEXT("Repeated trusted turn-in cannot pay while save is held"), Access::TurnInQuestAndSave(*Actor, HeldRepeat));
         TestTrue(TEXT("Held repeat reports completed and preserves entire candidate without writer"),
@@ -691,6 +415,7 @@ bool FJadeboundActorJournalQuestRewardTest::RunTest(const FString& Parameters)
                 Access::Committed(*Actor) && SameReflected(CompletedState, Access::Committed(*Actor)->State) &&
                 Access::Committed(*Actor)->PendingDrops.IsEmpty() && !Access::Held(*Actor) && !Access::IsHeld(*Actor) &&
                 Actor->GetPersistencePresentation().FailureKind == EJadeboundPersistenceFailureKind::None && Access::Slot(*Actor) == 1);
+            TestTrue(TEXT("Reward cache clears only after verified commit"), CacheCleared(*Actor));
         }
         Scope.Retire(*Actor); // Release real lease; direct-reopen branch deliberately never retries.
         auto* Reloaded = Scope.NewActor();
@@ -700,9 +425,9 @@ bool FJadeboundActorJournalQuestRewardTest::RunTest(const FString& Parameters)
             Access::Committed(*Reloaded) && SameReflected(CompletedState, Access::Committed(*Reloaded)->State) &&
             Access::Committed(*Reloaded)->PendingDrops.IsEmpty() && !Access::Held(*Reloaded));
         TArray<uint8> BeforeA, BeforeB;
-        if (!TestTrue(TEXT("Reopen leaves both original saved streams unchanged"), ReadOwned(Scope.Paths[1][0], BeforeA) && BeforeA == OldA &&
-            ReadOwned(Scope.Paths[1][1], BeforeB) && BeforeB == FirstPayload)) return false;
-        FTrace ReplayTrace; ReplayTrace.ExpectedPath = Scope.Paths[1][0];
+        if (!TestTrue(TEXT("Reopen leaves both original saved streams unchanged"), ReadOwned(Scope.V3Path(0), BeforeA) && BeforeA == OldA &&
+            ReadOwned(Scope.V3Path(1), BeforeB) && BeforeB == FirstPayload)) return false;
+        FTrace ReplayTrace; ReplayTrace.ExpectedPath = Scope.V3Path(0);
         Install(*Reloaded, ReplayTrace);
         const auto* ReopenedCommit = Access::Committed(*Reloaded);
         if (!TestTrue(TEXT("Reopened reward commit is available before replay checks"), ReopenedCommit != nullptr)) return false;
@@ -714,8 +439,8 @@ bool FJadeboundActorJournalQuestRewardTest::RunTest(const FString& Parameters)
             Access::Committed(*Reloaded) == ReopenedCommit && SameReflected(CompletedState, ReopenedCommit->State) &&
             ReopenedCommit->PendingDrops.IsEmpty() && !Access::Held(*Reloaded) && ReplayTrace.Opens == 0);
         TArray<uint8> AfterA, AfterB;
-        TestTrue(TEXT("Repeated reward attempt preserves both actual bank byte streams"), ReadOwned(Scope.Paths[1][0], AfterA) && AfterA == BeforeA &&
-            ReadOwned(Scope.Paths[1][1], AfterB) && AfterB == BeforeB);
+        TestTrue(TEXT("Repeated reward attempt preserves both actual bank byte streams"), ReadOwned(Scope.V3Path(0), AfterA) && AfterA == BeforeA &&
+            ReadOwned(Scope.V3Path(1), AfterB) && AfterB == BeforeB);
     }
     AddInfo(TEXT("Trusted quest transaction/bank regression only; no public interaction, combat, nonempty loot, network, power-loss or elapsed-scheduler acceptance."));
     return true;
@@ -727,7 +452,7 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
     using namespace JadeboundActorBanks;
     using Access = FJadeboundActorBankTestAccess;
     if (!IsInGameThread()) { AddError(TEXT("Actor-bank tests require the game thread.")); return false; }
-    FScope Scope(*this, TEXT("nonempty-v2-loot-uncertain-retry-reopen-pickup"));
+    FScope Scope(*this, TEXT("nonempty-v3-loot-uncertain-retry-reopen-pickup"));
     if (!Scope.bValid) return false;
     // Whole independent oracles: fixed fresh character, two issuance transactions,
     // two claims, and one quest turn-in. Nothing is copied from awarded output.
@@ -759,8 +484,8 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
     for (int32 Stage = 0; Stage < 7; ++Stage)
     {
         auto* Save = Cast<UJadeboundCharacterSave>(UGameplayStatics::CreateSaveGameObject(UJadeboundCharacterSave::StaticClass()));
-        if (!Save || !Jadebound::Persistence::EncodeStateV2(*Oracles[Stage], States[Stage]) ||
-            !Jadebound::Persistence::ValidateDropsV2(*Oracles[Stage], *OracleDrops[Stage])) return false;
+        if (!Save || !Jadebound::Persistence::EncodeStateV3(*Oracles[Stage], States[Stage]) ||
+            !Jadebound::Persistence::ValidateDropsV3(*Oracles[Stage], *OracleDrops[Stage])) return false;
         Save->CharacterId = Scope.Id; Save->State = States[Stage]; Save->PendingDrops = *OracleDrops[Stage];
         if (!Access::EncodeSyntheticFixture(Save, Journals[Stage]) || Journals[Stage].IsEmpty()) return false;
     }
@@ -775,7 +500,7 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
     };
     const auto BankMatches = [&](int32 Bank, int32 Stage) {
         TArray<uint8> ReadBack;
-        return ReadOwned(Scope.Paths[1][Bank], ReadBack) && ReadBack == Journals[Stage];
+        return ReadOwned(Scope.V3Path(Bank), ReadBack) && ReadBack == Journals[Stage];
     };
     auto* Actor = Scope.NewActor();
     if (!Actor || !TestTrue(TEXT("Fresh actual A is the complete known initial pair"), Access::Read(*Actor) &&
@@ -788,7 +513,7 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
         ParcelResult.Revision == 2 && LivePairMatches(*Actor,2) && CommitMatches(*Actor,2) &&
         Access::Slot(*Actor) == 0 && BankMatches(0,2) && BankMatches(1,1))) return false;
     const auto* OldCommitted = Access::Committed(*Actor);
-    FTrace Trace; Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.Paths[1][1];
+    FTrace Trace; Trace.Fault = EFault::UncertainFlush; Trace.ExpectedPath = Scope.V3Path(1);
     Install(*Actor, Trace);
     Jadebound::Result OreResult;
     TestFalse(TEXT("Real full flush reported uncertain holds the complete two-drop r3 candidate"),
@@ -799,6 +524,7 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
         OreResult.Succeeded() && OreResult.Changed && OreResult.Revision == 3 && LivePairMatches(*Actor,3) && Held &&
         Access::IsHeld(*Actor) && Held->CharacterId == Scope.Id && SameReflected(States[3],Held->State) &&
         SameDrops(BothDrops,Held->PendingDrops))) return false;
+    TestTrue(TEXT("Both pending drops share the exact first cached B image"), CacheMatches(*Actor, Trace.Payload, Scope.V3Path(1), 1));
     TestTrue(TEXT("Prior whole parcel commit remains selected and both real bank bytes match known oracles"),
         Access::Committed(*Actor) == OldCommitted && CommitMatches(*Actor,2) && Access::Slot(*Actor) == 0 &&
         BankMatches(0,2) && BankMatches(1,3) && Trace.Payload == Journals[3]);
@@ -826,13 +552,14 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
     Access::ExpireLocalFixtureDeadline(*Actor);
     Trace.Fault = EFault::None;
     if (!TestTrue(TEXT("Exact held two-drop retry actually commits and reads back B"), Access::Retry(*Actor))) return false;
-    TestTrue(TEXT("Retry serializes exact known r3 bytes and does not issue a third drop"), LivePairMatches(*Actor,3) &&
+    TestTrue(TEXT("Retry reuses exact known r3 bytes and does not issue a third drop"), LivePairMatches(*Actor,3) &&
         CommitMatches(*Actor,3) && Access::Slot(*Actor) == 1 && !Access::Held(*Actor) && !Access::IsHeld(*Actor) &&
         Actor->GetPersistencePresentation().FailureKind == EJadeboundPersistenceFailureKind::None &&
         Trace.Payload == Journals[3] && Trace.Opens == 2 && Trace.Writes == 2 && Trace.Flushes == 2 && Trace.Closes == 2 &&
         Trace.bFullFlush && Trace.bRealWriteSucceeded && Trace.bRealFlushSucceeded && !Trace.bPathRefused &&
         FString::Join(Trace.Events,TEXT("|")) == TEXT("open|write|flush|close|open|write|flush|close") &&
         BankMatches(0,2) && BankMatches(1,3));
+    TestTrue(TEXT("Verified nonempty-loot commit clears cached wire and destination"), CacheCleared(*Actor));
     Scope.Retire(*Actor);
     auto* Reloaded = Scope.NewActor();
     if (!Reloaded || !TestTrue(TEXT("A new actor reads both nonempty exact saved records from highest bank B"),
@@ -858,7 +585,7 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
         Access::Read(*Final) && LivePairMatches(*Final,6) && CommitMatches(*Final,6) && Access::Slot(*Final) == 0 &&
         BankMatches(0,6) && BankMatches(1,5))) return false;
     const auto* FinalCommitted = Access::Committed(*Final);
-    FTrace RepeatTrace; RepeatTrace.ExpectedPath = Scope.Paths[1][1];
+    FTrace RepeatTrace; RepeatTrace.ExpectedPath = Scope.V3Path(1);
     Install(*Final, RepeatTrace);
     Jadebound::Result RepeatedParcel, RepeatedOre, RepeatedReward;
     TestFalse(TEXT("Actual domain rejects already-consumed quest claim after reopen"), Access::ReplayConsumedClaimAndSave(*Final,1,true,RepeatedParcel));
@@ -870,11 +597,13 @@ bool FJadeboundActorJournalPendingLootTest::RunTest(const FString& Parameters)
         RepeatedReward.Code == Jadebound::ResultCode::QuestAlreadyCompleted && !RepeatedReward.Changed && RepeatedReward.Revision == 6 &&
         LivePairMatches(*Final,6) && CommitMatches(*Final,6) && Access::Committed(*Final) == FinalCommitted &&
         !Access::Held(*Final) && RepeatTrace.Opens == 0 && BankMatches(0,6) && BankMatches(1,5));
-    TestFalse(TEXT("No legacy A created in this fresh v2 fixture"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.Paths[0][0]));
-    TestFalse(TEXT("No legacy B created in this fresh v2 fixture"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.Paths[0][1]));
-    AddInfo(TEXT("Synthetic nonempty v2 actor-bank pair/real IO regression only; no native enemy/death, final-hit ownership, public pickup/range, animation/visual, game restart, network, power-loss or elapsed-scheduler acceptance."));
+    TestFalse(TEXT("No legacy A created in this fresh v3 fixture"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.V1Path(0)));
+    TestFalse(TEXT("No legacy B created in this fresh v3 fixture"), FPlatformFileManager::Get().GetPlatformFile().FileExists(*Scope.V1Path(1)));
+    TestTrue(TEXT("Fresh current progression never creates either old-format pair"), Scope.OlderPairsAbsent());
+    AddInfo(TEXT("Synthetic nonempty v3 actor-bank pair/real IO regression only; no native enemy/death, final-hit ownership, public pickup/range, animation/visual, game restart, network, power-loss or elapsed-scheduler acceptance."));
     return true;
 }
-#include "Tests/JadeboundGuardedV2ActorBankTests.inl"
+// GuardedV2 registrations remain in the preserved supported-old build.
+// Current V3/V4 admission is covered by the separate Source148 tests.
 
 #endif

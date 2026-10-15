@@ -1,6 +1,7 @@
 #include "Persistence/ProgressionSaveV2.h"
 
 #include "Development/DevelopmentIdentity.h"
+#include "Domain/FrozenV2Migration.h"
 #include "Misc/Paths.h"
 
 #include <algorithm>
@@ -8,18 +9,18 @@
 
 namespace Jadebound::Persistence
 {
-bool EncodeStateV2(const Snapshot& Source, FJadeboundProgressionState& Out)
+bool EncodeStateV2(const JadeboundLegacyV2::Snapshot& Source, FJadeboundProgressionState& Out)
 {
-    if (!ProgressionCore::ValidateSnapshot(Source).Succeeded()) return false;
+    if (!JadeboundLegacyV2::ProgressionCore::ValidateSnapshot(Source).Succeeded()) return false;
     FJadeboundProgressionState Candidate;
-    Candidate.Version = static_cast<int32>(SnapshotVersion);
+    Candidate.Version = static_cast<int32>(JadeboundLegacyV2::SnapshotVersion);
     Candidate.ExactRevision = Source.Revision;
     Candidate.Revision = static_cast<int64>(Source.Revision);
     Candidate.Coins = Source.Coins;
     Candidate.EquippedWeapon = static_cast<int32>(Source.EquippedWeapon);
     Candidate.QuestState = static_cast<int32>(Source.Quest);
-    Candidate.Slots.SetNum(static_cast<int32>(InventorySlotCount));
-    for (uint32 Index = 0; Index < InventorySlotCount; ++Index)
+    Candidate.Slots.SetNum(static_cast<int32>(JadeboundLegacyV2::InventorySlotCount));
+    for (uint32 Index = 0; Index < JadeboundLegacyV2::InventorySlotCount; ++Index)
     {
         Candidate.Slots[Index].ItemId = static_cast<int32>(Source.Inventory[Index].Id);
         Candidate.Slots[Index].Count = static_cast<int32>(Source.Inventory[Index].Count);
@@ -32,23 +33,23 @@ bool EncodeStateV2(const Snapshot& Source, FJadeboundProgressionState& Out)
     return true;
 }
 
-bool DecodeStateV2(const FJadeboundProgressionState& Source, Snapshot& Out)
+bool DecodeStateV2(const FJadeboundProgressionState& Source, JadeboundLegacyV2::Snapshot& Out)
 {
-    if (Source.Version != 2 || Source.Slots.Num() != static_cast<int32>(InventorySlotCount) ||
+    if (Source.Version != 2 || Source.EquippedTorso != 0 || Source.Slots.Num() != static_cast<int32>(JadeboundLegacyV2::InventorySlotCount) ||
         Source.NextDropId <= 0 || Source.QuestKillDropId < 0 || Source.Revision < 0 ||
-        Source.ExactRevision > MaximumPersistedCounter ||
+        Source.ExactRevision > JadeboundLegacyV2::MaximumPersistedCounter ||
         static_cast<uint64>(Source.Revision) != Source.ExactRevision ||
         !Source.RecordedDropIds.IsEmpty() || !Source.ProcessedDropIds.IsEmpty() ||
-        Source.UnprocessedDropIds.Num() > static_cast<int32>(MaximumUnprocessedDrops)) return false;
-    Snapshot Candidate;
+        Source.UnprocessedDropIds.Num() > static_cast<int32>(JadeboundLegacyV2::MaximumUnprocessedDrops)) return false;
+    JadeboundLegacyV2::Snapshot Candidate;
     Candidate.Revision = Source.ExactRevision;
     Candidate.Coins = Source.Coins;
-    Candidate.EquippedWeapon = static_cast<ItemId>(Source.EquippedWeapon);
-    Candidate.Quest = static_cast<QuestState>(Source.QuestState);
-    for (uint32 Index = 0; Index < InventorySlotCount; ++Index)
+    Candidate.EquippedWeapon = static_cast<JadeboundLegacyV2::ItemId>(Source.EquippedWeapon);
+    Candidate.Quest = static_cast<JadeboundLegacyV2::QuestState>(Source.QuestState);
+    for (uint32 Index = 0; Index < JadeboundLegacyV2::InventorySlotCount; ++Index)
     {
         if (Source.Slots[Index].ItemId < 0 || Source.Slots[Index].Count < 0) return false;
-        Candidate.Inventory[Index] = {static_cast<ItemId>(Source.Slots[Index].ItemId), static_cast<uint32>(Source.Slots[Index].Count)};
+        Candidate.Inventory[Index] = {static_cast<JadeboundLegacyV2::ItemId>(Source.Slots[Index].ItemId), static_cast<uint32>(Source.Slots[Index].Count)};
     }
     Candidate.NextDropId = static_cast<uint64>(Source.NextDropId);
     Candidate.QuestKillDropId = static_cast<uint64>(Source.QuestKillDropId);
@@ -57,7 +58,7 @@ bool DecodeStateV2(const FJadeboundProgressionState& Source, Snapshot& Out)
         if (Id <= 0) return false;
         Candidate.UnprocessedDropIds.push_back(static_cast<uint64>(Id));
     }
-    if (!ProgressionCore::ValidateSnapshot(Candidate).Succeeded()) return false;
+    if (!JadeboundLegacyV2::ProgressionCore::ValidateSnapshot(Candidate).Succeeded()) return false;
     Out = std::move(Candidate);
     return true;
 }
@@ -65,7 +66,7 @@ bool DecodeStateV2(const FJadeboundProgressionState& Source, Snapshot& Out)
 bool DecodeStateV1(const FJadeboundProgressionState& Source, JadeboundLegacyV1::Snapshot& Out)
 {
     // Exact old uint64 revision validation happens BEFORE v2 eligibility/ranking.
-    if (Source.Version != 1 || Source.Slots.Num() != static_cast<int32>(InventorySlotCount) ||
+    if (Source.Version != 1 || Source.EquippedTorso != 0 || Source.Slots.Num() != static_cast<int32>(JadeboundLegacyV1::InventorySlotCount) ||
         Source.NextDropId <= 0 || Source.QuestKillDropId < 0 || !Source.UnprocessedDropIds.IsEmpty() ||
         Source.RecordedDropIds.Num() > static_cast<int32>(JadeboundLegacyV1::MaximumRecordedDrops) ||
         Source.ProcessedDropIds.Num() > static_cast<int32>(JadeboundLegacyV1::MaximumRecordedDrops) ||
@@ -75,7 +76,7 @@ bool DecodeStateV1(const FJadeboundProgressionState& Source, JadeboundLegacyV1::
     Candidate.Coins = Source.Coins;
     Candidate.EquippedWeapon = static_cast<JadeboundLegacyV1::ItemId>(Source.EquippedWeapon);
     Candidate.Quest = static_cast<JadeboundLegacyV1::QuestState>(Source.QuestState);
-    for (uint32 Index = 0; Index < InventorySlotCount; ++Index)
+    for (uint32 Index = 0; Index < JadeboundLegacyV1::InventorySlotCount; ++Index)
     {
         if (Source.Slots[Index].ItemId < 0 || Source.Slots[Index].Count < 0) return false;
         Candidate.Inventory[Index] = {static_cast<JadeboundLegacyV1::ItemId>(Source.Slots[Index].ItemId), static_cast<uint32>(Source.Slots[Index].Count)};
@@ -108,9 +109,9 @@ bool ValidateDropRecord(const FJadeboundSavedDrop& Drop)
 }
 }
 
-bool ValidateDropsV2(const Snapshot& Candidate, const TArray<FJadeboundSavedDrop>& Drops)
+bool ValidateDropsV2(const JadeboundLegacyV2::Snapshot& Candidate, const TArray<FJadeboundSavedDrop>& Drops)
 {
-    if (!ProgressionCore::ValidateSnapshot(Candidate).Succeeded() ||
+    if (!JadeboundLegacyV2::ProgressionCore::ValidateSnapshot(Candidate).Succeeded() ||
         Drops.Num() != static_cast<int32>(Candidate.UnprocessedDropIds.size())) return false;
     TSet<int64> Seen;
     for (const auto& Drop : Drops)
@@ -164,7 +165,7 @@ bool TryJournalPath(bool bDevelopment, const FString& CharacterId, int32 Slot, b
 
 bool TryForwardV3JournalPath(bool bDevelopment, const FString& CharacterId, int32 Slot, FString& Out)
 {
-    static_assert(SnapshotVersion == 2, "Guarded V2 admission must be reviewed when integrating V3");
+    static_assert(JadeboundLegacyV2::SnapshotVersion == 2, "Historical path policy is bound to frozen V2; actor admission remains separate");
     Out.Reset();
     FString Current;
     // Reuse exact authority-owned current identity/slot validation and directory.
@@ -176,12 +177,12 @@ bool TryForwardV3JournalPath(bool bDevelopment, const FString& CharacterId, int3
     return true;
 }
 
-bool BuildMigrationCandidate(const JadeboundLegacyV1::Snapshot& Legacy, Snapshot& Out)
+bool BuildMigrationCandidate(const JadeboundLegacyV1::Snapshot& Legacy, JadeboundLegacyV2::Snapshot& Out)
 {
-    Snapshot Candidate;
-    if (!ConvertLegacyV1Snapshot(Legacy, Candidate).Succeeded() || Candidate.Revision >= MaximumPersistedCounter) return false;
+    JadeboundLegacyV2::Snapshot Candidate;
+    if (!FrozenV2Migration::ConvertLegacyV1Snapshot(Legacy, Candidate).Succeeded() || Candidate.Revision >= JadeboundLegacyV2::MaximumPersistedCounter) return false;
     ++Candidate.Revision; // One representation transaction; never a reward call.
-    if (!ProgressionCore::ValidateSnapshot(Candidate).Succeeded()) return false;
+    if (!JadeboundLegacyV2::ProgressionCore::ValidateSnapshot(Candidate).Succeeded()) return false;
     Out = std::move(Candidate);
     return true;
 }

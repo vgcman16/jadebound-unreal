@@ -1,5 +1,5 @@
 #include "Domain/RecipientLedger.h"
-#include "Persistence/ProgressionSaveV2.h"
+#include "Persistence/ProgressionSaveV3.h"
 #include "Combat/RecipientCombatRules.h"
 #include <utility>
 
@@ -8,7 +8,7 @@ namespace Jadebound::Recipient
 Result BuildIssue(const Snapshot& Before, const TArray<FJadeboundSavedDrop>& Drops,
     const FVector& AuthorityEnemyLocation, IssueCandidate& Out)
 {
-    if (!Persistence::ValidateDropsV2(Before, Drops) ||
+    if (!Persistence::ValidateDropsV3(Before, Drops) ||
         !Combat::IsSavedDropLocation(AuthorityEnemyLocation))
         return {ResultCode::InvalidSnapshot, ValidationCode::None, false, Before.Revision};
     ProgressionCore Trial;
@@ -29,8 +29,8 @@ Result BuildIssue(const Snapshot& Before, const TArray<FJadeboundSavedDrop>& Dro
     Drop.Location = AuthorityEnemyLocation;
     Candidate.Drops.Add(Drop);
     FJadeboundProgressionState Encoded;
-    if (!Persistence::ValidateDropsV2(Candidate.State, Candidate.Drops) ||
-        !Persistence::EncodeStateV2(Candidate.State, Encoded))
+    if (!Persistence::ValidateDropsV3(Candidate.State, Candidate.Drops) ||
+        !Persistence::EncodeStateV3(Candidate.State, Encoded))
         return {ResultCode::InvalidSnapshot, ValidationCode::None, false, Before.Revision};
     Out = std::move(Candidate);
     return Issued;
@@ -39,7 +39,7 @@ bool HasCommittedIssue(const Snapshot& Committed, const TArray<FJadeboundSavedDr
     int64 DropId, uint64 MinimumRevision)
 {
     return DropId > 0 && MinimumRevision <= MaximumPersistedCounter &&
-        Persistence::ValidateDropsV2(Committed, Drops) && Committed.Revision >= MinimumRevision &&
+        Persistence::ValidateDropsV3(Committed, Drops) && Committed.Revision >= MinimumRevision &&
         static_cast<uint64>(DropId) < Committed.NextDropId;
 }
 }

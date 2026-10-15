@@ -1,4 +1,5 @@
 #include "Persistence/ProgressionSaveV2.h"
+#include "Domain/FrozenV2Migration.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Development/DevelopmentIdentity.h"
@@ -11,12 +12,12 @@
 
 namespace
 {
-bool SameSnapshot(const Jadebound::Snapshot& A, const Jadebound::Snapshot& B)
+bool SameSnapshot(const JadeboundLegacyV2::Snapshot& A, const JadeboundLegacyV2::Snapshot& B)
 {
     if (A.Version != B.Version || A.Revision != B.Revision || A.Coins != B.Coins ||
         A.EquippedWeapon != B.EquippedWeapon || A.Quest != B.Quest || A.NextDropId != B.NextDropId ||
         A.QuestKillDropId != B.QuestKillDropId || A.UnprocessedDropIds != B.UnprocessedDropIds) return false;
-    for (uint32 Index = 0; Index < Jadebound::InventorySlotCount; ++Index)
+    for (uint32 Index = 0; Index < JadeboundLegacyV2::InventorySlotCount; ++Index)
         if (A.Inventory[Index].Id != B.Inventory[Index].Id || A.Inventory[Index].Count != B.Inventory[Index].Count) return false;
     return true;
 }
@@ -36,8 +37,8 @@ FJadeboundProgressionState LegacyFixture(const JadeboundLegacyV1::Snapshot& S)
     Out.QuestState = static_cast<int32>(S.Quest);
     Out.NextDropId = static_cast<int64>(S.NextDropId);
     Out.QuestKillDropId = static_cast<int64>(S.QuestKillDropId);
-    Out.Slots.SetNum(static_cast<int32>(Jadebound::InventorySlotCount));
-    for (uint32 Index = 0; Index < Jadebound::InventorySlotCount; ++Index)
+    Out.Slots.SetNum(static_cast<int32>(JadeboundLegacyV2::InventorySlotCount));
+    for (uint32 Index = 0; Index < JadeboundLegacyV2::InventorySlotCount; ++Index)
     {
         Out.Slots[Index].ItemId = static_cast<int32>(S.Inventory[Index].Id);
         Out.Slots[Index].Count = static_cast<int32>(S.Inventory[Index].Count);
@@ -108,7 +109,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJadeboundV2CodecMigrationTest, "Jadebound.Pers
     EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 bool FJadeboundV2CodecMigrationTest::RunTest(const FString& Parameters)
 {
-    using namespace Jadebound;
+    using namespace JadeboundLegacyV2;
     using namespace Jadebound::Persistence;
     TestEqual(TEXT("Reflected missing-tag compatibility default remains1"), FJadeboundProgressionState().Version, 1);
     for (uint32 Stage = 0; Stage <= 4; ++Stage)
@@ -145,7 +146,7 @@ bool FJadeboundV2CodecMigrationTest::RunTest(const FString& Parameters)
         for (int32 Index = 0; Index < Drops.Num(); ++Index)
             TestTrue(TEXT("Synthetic v1 pending locations/order preserved"), FJadeboundSavedDrop::StaticStruct()->CompareScriptStruct(&Drops[Index], &LegacyReloaded->PendingDrops[Index], 0));
         Snapshot Pure, Migration;
-        if (!TestTrue(TEXT("Exact pure conversion and one representation increment"), ConvertLegacyV1Snapshot(DecodedLegacy, Pure).Succeeded() &&
+        if (!TestTrue(TEXT("Exact pure conversion and one representation increment"), Jadebound::FrozenV2Migration::ConvertLegacyV1Snapshot(DecodedLegacy, Pure).Succeeded() &&
             Pure.Revision == Original.Revision && BuildMigrationCandidate(DecodedLegacy, Migration) && Migration.Revision == Original.Revision + 1)) return false;
         auto Expected = Pure;
         ++Expected.Revision;
@@ -197,7 +198,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJadeboundV2PendingValidationTest, "Jadebound.P
     EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 bool FJadeboundV2PendingValidationTest::RunTest(const FString& Parameters)
 {
-    using namespace Jadebound;
+    using namespace JadeboundLegacyV2;
     using namespace Jadebound::Persistence;
     JadeboundLegacyV1::ProgressionCore Old;
     if (!TestTrue(TEXT("Mixed ordinary/quest outstanding fixture"), Old.RecordRaiderDefeat(1).Succeeded() &&
@@ -235,7 +236,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FJadeboundV2MigrationExhaustionTest, "Jadebound
     EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 bool FJadeboundV2MigrationExhaustionTest::RunTest(const FString& Parameters)
 {
-    using namespace Jadebound;
+    using namespace JadeboundLegacyV2;
     using namespace Jadebound::Persistence;
     JadeboundLegacyV1::Snapshot Old;
     Old.Revision = MaximumPersistedCounter + 1;

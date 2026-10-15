@@ -5,7 +5,8 @@
 #include "JadeboundDevelopmentGameMode.h"
 #include "Development/DevelopmentIdentity.h"
 #include "Domain/ProgressionCore.h"
-#include "Persistence/ProgressionSaveV2.h"
+#include "Persistence/ProgressionSaveV3.h"
+#include "Persistence/JournalNamespacePaths.h"
 #include "Presentation/StackSaleQuote.h"
 #include "UI/SJadeboundProgressionPanel.h"
 #include "Framework/Application/SlateApplication.h"
@@ -53,6 +54,8 @@ struct FJadeboundMerchantBulkSaleTestAccess
     static int32 BankSlot(const AJadeboundProgressionActor& Model) { return Model.LastSaveSlot; }
     static bool Clean(const AJadeboundProgressionActor& Model)
     { return !Model.bPersistenceBlocked && !Model.bUnsavedCandidate && !Model.HeldSaveCandidate &&
+        Model.bV3JournalAdmitted && Model.HeldJournalBytes.IsEmpty() && Model.HeldJournalPath.IsEmpty() &&
+        Model.HeldJournalSlot == INDEX_NONE &&
         Model.PersistencePresentation.FailureKind == EJadeboundPersistenceFailureKind::None && Model.PendingDrops.IsEmpty(); }
     static void SetOpener(AJadeboundProgressionActor& Model, TFunction<IFileHandle*(const FString&)> Opener)
     { Model.AutomationJournalOpener = MoveTemp(Opener); }
@@ -107,10 +110,14 @@ struct FJadeboundMerchantBulkSaleTestAccess
 namespace JadeboundMerchantBulkSale
 {
 using Access = FJadeboundMerchantBulkSaleTestAccess;
+// Preserve existing current-bank indices for callers; old pairs are explicit.
+// 0/1 = V1, 2/3 = current V3, 4/5 = retained V2, 6/7 = forward V4 guard.
+inline constexpr int32 JournalPathCount = 8;
+static_assert(Jadebound::SnapshotVersion == 3, "Review merchant fixture namespaces when the current format changes");
 inline bool SameCore(const Jadebound::Snapshot& A, const Jadebound::Snapshot& B)
 {
     if (A.Version != B.Version || A.Revision != B.Revision || A.Coins != B.Coins || A.Quest != B.Quest ||
-        A.EquippedWeapon != B.EquippedWeapon || A.NextDropId != B.NextDropId || A.QuestKillDropId != B.QuestKillDropId ||
+        A.EquippedWeapon != B.EquippedWeapon || A.EquippedTorso != B.EquippedTorso || A.NextDropId != B.NextDropId || A.QuestKillDropId != B.QuestKillDropId ||
         A.UnprocessedDropIds != B.UnprocessedDropIds) return false;
     for (uint32 I = 0; I < Jadebound::InventorySlotCount; ++I)
         if (A.Inventory[I].Id != B.Inventory[I].Id || A.Inventory[I].Count != B.Inventory[I].Count) return false;
@@ -129,8 +136,9 @@ struct Bank { bool bExists = false; TArray<uint8> Bytes; };
 inline bool ReadBank(const FString& Path, Bank& Out)
 {
     IPlatformFile& Files = FPlatformFileManager::Get().GetPlatformFile();
-    Out.bExists = Files.FileExists(*Path); Out.Bytes.Reset();
+    Out.bExists = Jadebound::Persistence::HasJournalEntry(Files, Path); Out.Bytes.Reset();
     if (!Out.bExists) return true;
+    if (!Files.FileExists(*Path) || Files.DirectoryExists(*Path)) return false; // Presence must not masquerade as absence.
     const int64 Size = Files.FileSize(*Path);
     if (Size <= 0 || Size > 1024 * 1024 + 32) return false;
     TUniquePtr<IFileHandle> File(Files.OpenRead(*Path));
@@ -164,7 +172,7 @@ struct Image
     FString CharacterId;
     TArray<FJadeboundSavedDrop> Pending, SavedDrops;
     int32 Slot = -1, Opens = 0;
-    Bank Banks[4];
+    Bank Banks[JournalPathCount];
 };
 struct FScope
 {
@@ -177,7 +185,7 @@ struct FScope
     AJadeboundProgressionActor* Model = nullptr;
     UStaticMesh* Glaive = nullptr;
     UStaticMesh* Spear = nullptr;
-    FString Id, Paths[4], LastOpenedPath;
+    FString Id, Paths[JournalPathCount], LastOpenedPath;
     int32 Opens = 0;
     bool bForeign = false, bValid = false;
     FScope(FAutomationTestBase& InTest) : Test(InTest)
@@ -191,9 +199,18 @@ struct FScope
         if (!HeroClass || !Glaive || !Spear) { Test.AddError(TEXT("Actual preserved Hero and both original weapon assets required.")); return; }
         Id = FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower();
         if (!Jadebound::Development::IsCharacterId(Id)) { Test.AddError(TEXT("Fresh canonical nonzero GUID required.")); return; }
-        for (int32 I = 0; I < 4; ++I)
-            if (!Jadebound::Persistence::TryJournalPath(true, Id, I % 2, I >= 2, Paths[I]) ||
-                !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Paths[I]), User))
+        Jadebound::Persistence::JournalNamespacePaths Namespaces;
+        if (!Jadebound::Persistence::BuildJournalNamespacePaths(true, Id, Namespaces))
+        { Test.AddError(TEXT("All production V1/V2/V3 and forward V4 paths must be valid.")); return; }
+        for (int32 Slot = 0; Slot < 2; ++Slot)
+        {
+            Paths[Slot] = Namespaces.Banks[0][Slot];
+            Paths[2 + Slot] = Namespaces.Banks[2][Slot];
+            Paths[4 + Slot] = Namespaces.Banks[1][Slot];
+            Paths[6 + Slot] = Namespaces.ForwardV4[Slot];
+        }
+        for (int32 I = 0; I < JournalPathCount; ++I)
+            if (!FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Paths[I]), User))
             { Test.AddError(TEXT("All production journal paths must remain under owned UserDir.")); return; }
         if (FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*FPaths::GetPath(Paths[2])))
         { Test.AddError(TEXT("Fresh identity directory required; no reset or reuse.")); return; }
@@ -249,9 +266,9 @@ struct FScope
         const auto* Saved = Access::Saved(*Model);
         Jadebound::Snapshot Decoded; FJadeboundProgressionState Encoded;
         return Saved && Saved->CharacterId == Id && Saved->PendingDrops.IsEmpty() &&
-            SameCore(Access::Core(*Model), Expected) && Jadebound::Persistence::EncodeStateV2(Expected, Encoded) &&
+            SameCore(Access::Core(*Model), Expected) && Jadebound::Persistence::EncodeStateV3(Expected, Encoded) &&
             SameReflected(Encoded, Model->GetProgressionState()) && SameReflected(Encoded, Saved->State) &&
-            Jadebound::Persistence::DecodeStateV2(Saved->State, Decoded) && SameCore(Expected, Decoded);
+            Jadebound::Persistence::DecodeStateV3(Saved->State, Decoded) && SameCore(Expected, Decoded);
     }
     bool Capture(Image& Out) const
     {
@@ -259,8 +276,12 @@ struct FScope
         Out.Core = Access::Core(*Model); Out.Reflected = Model->GetProgressionState(); Out.Saved = Access::Saved(*Model);
         Out.Committed = Out.Saved->State; Out.CharacterId = Out.Saved->CharacterId; Out.SavedDrops = Out.Saved->PendingDrops;
         Out.Pending = Access::Drops(*Model); Out.Slot = Access::BankSlot(*Model); Out.Opens = Opens;
-        for (int32 I = 0; I < 4; ++I) if (!ReadBank(Paths[I], Out.Banks[I])) return false;
-        return !Out.Banks[0].bExists && !Out.Banks[1].bExists && Out.Slot >= 0 && Out.Slot < 2 && Out.Banks[2 + Out.Slot].bExists;
+        for (int32 I = 0; I < JournalPathCount; ++I) if (!ReadBank(Paths[I], Out.Banks[I])) return false;
+        // This fixture begins fresh and exercises only current transactions.
+        // Neither legacy pair nor a future-format entry may appear as a side effect.
+        for (int32 I = 0; I < JournalPathCount; ++I)
+            if (I != 2 && I != 3 && Out.Banks[I].bExists) return false;
+        return Out.Slot >= 0 && Out.Slot < 2 && Out.Banks[2 + Out.Slot].bExists;
     }
     bool Unchanged(const Image& Before) const
     {
@@ -269,7 +290,7 @@ struct FScope
             !SameCore(After.Core, Before.Core) || !SameReflected(After.Reflected, Before.Reflected) ||
             !SameReflected(After.Committed, Before.Committed) || !SameDrops(After.Pending, Before.Pending) ||
             !SameDrops(After.SavedDrops, Before.SavedDrops) || After.Slot != Before.Slot || After.Opens != Before.Opens) return false;
-        for (int32 I = 0; I < 4; ++I) if (!SameBank(After.Banks[I], Before.Banks[I])) return false;
+        for (int32 I = 0; I < JournalPathCount; ++I) if (!SameBank(After.Banks[I], Before.Banks[I])) return false;
         return true;
     }
     bool Advanced(const Image& Before, const Jadebound::Snapshot& Expected) const
@@ -277,7 +298,7 @@ struct FScope
         Image After;
         if (!StateIs(Expected) || !Capture(After) || After.Opens != Before.Opens + 1 || After.Saved == Before.Saved ||
             After.Slot != 1 - Before.Slot || LastOpenedPath != Paths[2 + After.Slot] || SameBank(After.Banks[2 + After.Slot], Before.Banks[2 + After.Slot])) return false;
-        for (int32 I = 0; I < 4; ++I) if (I != 2 + After.Slot && !SameBank(After.Banks[I], Before.Banks[I])) return false;
+        for (int32 I = 0; I < JournalPathCount; ++I) if (I != 2 + After.Slot && !SameBank(After.Banks[I], Before.Banks[I])) return false;
         return true;
     }
     bool Reopen()
